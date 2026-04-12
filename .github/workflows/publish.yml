@@ -1,0 +1,86 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  # On push to main: compute version and create a draft release
+  draft-release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute date-based version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY=$(date -u +"%Y.%m.%d")
+
+          EXISTING=$(gh api repos/${{ github.repository }}/git/refs/tags \
+            --paginate --jq '.[].ref' 2>/dev/null \
+            | grep "^refs/tags/v${TODAY}\." || true)
+
+          if [ -z "$EXISTING" ]; then
+            N=0
+          else
+            MAX_N=$(echo "$EXISTING" | sed "s|refs/tags/v${TODAY}\.||" | sort -n | tail -1)
+            N=$((MAX_N + 1))
+          fi
+
+          VERSION="${TODAY}.${N}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Computed version: $VERSION"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --draft \
+            --notes "## What's Changed\n\n<!-- Add release notes here before publishing -->"
+
+  # On release published: publish to npm
+  publish:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    environment: Production
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
