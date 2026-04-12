@@ -1,4 +1,4 @@
-name: Publish to npm
+name: Publish to npm + ClawHub
 
 on:
   push:
@@ -81,3 +81,9 @@ jobs:
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to ClawHub
+        run: |
+          npm i -g clawhub
+          clawhub login --token ${{ secrets.CLAWHUB_TOKEN }} --no-browser
+          clawhub package publish ${{ github.repository }}@${{ github.event.release.tag_name }} --json
