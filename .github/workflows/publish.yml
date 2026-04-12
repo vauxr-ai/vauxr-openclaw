@@ -86,4 +86,4 @@ jobs:
         run: |
           npm i -g clawhub
           clawhub login --token ${{ secrets.CLAWHUB_TOKEN }} --no-browser
-          clawhub package publish .
+          clawhub package publish . --source-repo ${{ github.repository }} --source-commit ${{ github.sha }} --source-ref ${{ github.event.release.tag_name }}
