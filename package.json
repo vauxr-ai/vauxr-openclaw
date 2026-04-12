@@ -1,0 +1,26 @@
+{
+  "name": "vauxr-openclaw",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.ts",
+  "openclaw": {
+    "extensions": ["./index.ts", "./setup-entry.ts"],
+    "compat": {
+      "pluginApi": ">=2026.4.2",
+      "minGatewayVersion": "2026.4.2"
+    },
+    "build": {
+      "openclawVersion": "2026.4.2",
+      "pluginSdkVersion": "2026.4.2"
+    }
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "openclaw": "^2026.4.2",
+    "typescript": "^5.0.0"
+  }
+}
