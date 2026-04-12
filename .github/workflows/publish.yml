@@ -1,0 +1,67 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed to push version tags
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compute date-based version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY=$(date -u +"%Y.%m.%d")
+
+          # Query existing tags for today via GitHub API
+          EXISTING=$(gh api repos/${{ github.repository }}/git/refs/tags \
+            --paginate --jq '.[].ref' 2>/dev/null \
+            | grep "^refs/tags/v${TODAY}\." || true)
+
+          if [ -z "$EXISTING" ]; then
+            N=0
+          else
+            # Extract the N suffix, find the max, and increment
+            MAX_N=$(echo "$EXISTING" | sed "s|refs/tags/v${TODAY}\.||" | sort -n | tail -1)
+            N=$((MAX_N + 1))
+          fi
+
+          VERSION="${TODAY}.${N}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Computed version: $VERSION"
+
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
