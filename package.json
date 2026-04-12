@@ -1,10 +1,13 @@
 {
-  "name": "vauxr-openclaw",
+  "name": "vauxr",
   "version": "0.1.0",
   "type": "module",
   "main": "./index.ts",
   "openclaw": {
-    "extensions": ["./index.ts", "./setup-entry.ts"],
+    "extensions": [
+      "./index.ts",
+      "./setup-entry.ts"
+    ],
     "compat": {
       "pluginApi": ">=2026.4.2",
       "minGatewayVersion": "2026.4.2"
