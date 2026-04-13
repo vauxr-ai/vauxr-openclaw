@@ -59,7 +59,13 @@ These tools use the Vauxr REST API and work in any session, not just vauxr voice
 
 ## Installation
 
-Install from the repo directly:
+Install from ClawHub 🦞
+
+```bash
+openclaw plugins install clawhub:@vauxr/openclaw
+```
+
+Or install from the repo directly:
 
 ```bash
 openclaw plugins install path:/path/to/vauxr-openclaw
@@ -90,7 +96,7 @@ Then configure in your OpenClaw config:
 ```
 
 - `url` — Vauxr base URL (HTTP)
-- `token` — channel token generated in the Vauxr portal
+- `token` — channel token generated in the Vauxr web client
 - `voiceSystemPrompt` — optional, appended to the system prompt for all vauxr sessions
 
 The `allowPromptInjection` hook permission is required for the voice system prompt to take effect.
