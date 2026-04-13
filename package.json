@@ -25,5 +25,6 @@
     "@types/ws": "^8.5.0",
     "openclaw": "^2026.4.2",
     "typescript": "^5.0.0"
-  }
+  },
+  "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices."
 }
