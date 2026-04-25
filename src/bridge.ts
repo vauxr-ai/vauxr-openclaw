@@ -192,7 +192,13 @@ export class VauxrBridge {
           (typeof event.data["delta"] === "string" && event.data["delta"]) ||
           (typeof event.data["text"] === "string" && event.data["text"]) ||
           null;
-        if (chunk) {
+        // Filter out the silent-reply sentinel ("NO_REPLY") so it
+        // never reaches TTS. OpenClaw's runtime emits this token in the
+        // assistant stream when the agent declines to reply.
+        const isSilentSentinel =
+          typeof chunk === "string" &&
+          chunk.trim().toUpperCase() === "NO_REPLY";
+        if (chunk && !isSilentSentinel) {
           this.send({
             type: "channel.response.delta",
             deviceId,
