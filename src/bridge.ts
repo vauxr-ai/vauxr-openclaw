@@ -35,6 +35,13 @@ export class VauxrBridge {
   private unsubscribeEvents: (() => void) | null = null;
   private activeRuns = new Map<string, string>(); // SDK runId → deviceId
   private runIdMap = new Map<string, string>(); // SDK runId → protocol runId
+  // Per-run sentinel-detection state. The silent-reply sentinel
+  // ("NO_REPLY") often arrives split across streaming deltas
+  // (e.g. "NO" then "_REPLY"), so we buffer deltas until the
+  // accumulated text either matches the sentinel (suppress the whole
+  // run) or diverges from it (flush and pass through the rest).
+  private sentinelBuffer = new Map<string, string>(); // SDK runId → held delta text
+  private sentinelMode = new Map<string, "passthrough" | "suppressed">(); // SDK runId → committed decision
   private wsUrl: string;
 
   constructor(
@@ -192,17 +199,37 @@ export class VauxrBridge {
         // one final assistant event per run with `{ text }` only (no
         // `delta`); those carry no new content and must be dropped.
         const delta = event.data["delta"];
-        if (typeof delta === "string" && delta.length > 0) {
-          const isSilentSentinel = delta.trim().toUpperCase() === "NO_REPLY";
-          if (!isSilentSentinel) {
-            this.send({
-              type: "channel.response.delta",
-              deviceId,
-              runId,
-              text: delta,
-            });
-          }
+        if (typeof delta !== "string" || delta.length === 0) return;
+
+        const mode = this.sentinelMode.get(event.runId);
+        if (mode === "suppressed") return;
+        if (mode === "passthrough") {
+          this.send({ type: "channel.response.delta", deviceId, runId, text: delta });
+          return;
         }
+
+        // Buffering: hold deltas while the accumulated text could
+        // still complete the silent-reply sentinel.
+        const SENTINEL = "NO_REPLY";
+        const buffered = (this.sentinelBuffer.get(event.runId) ?? "") + delta;
+        const normalized = buffered.trim().toUpperCase();
+
+        if (normalized === SENTINEL) {
+          // Confirmed sentinel — suppress everything for this run.
+          this.sentinelMode.set(event.runId, "suppressed");
+          this.sentinelBuffer.delete(event.runId);
+          return;
+        }
+        if (SENTINEL.startsWith(normalized)) {
+          // Could still become the sentinel — keep holding.
+          this.sentinelBuffer.set(event.runId, buffered);
+          return;
+        }
+        // Diverged from sentinel — flush the held text and pass through
+        // the rest of the run.
+        this.sentinelMode.set(event.runId, "passthrough");
+        this.sentinelBuffer.delete(event.runId);
+        this.send({ type: "channel.response.delta", deviceId, runId, text: buffered });
       }
 
       // Clean up when run ends
@@ -214,6 +241,8 @@ export class VauxrBridge {
         });
         this.activeRuns.delete(event.runId);
         this.runIdMap.delete(event.runId);
+        this.sentinelBuffer.delete(event.runId);
+        this.sentinelMode.delete(event.runId);
       }
 
       if (event.stream === "error") {
@@ -228,6 +257,8 @@ export class VauxrBridge {
         });
         this.activeRuns.delete(event.runId);
         this.runIdMap.delete(event.runId);
+        this.sentinelBuffer.delete(event.runId);
+        this.sentinelMode.delete(event.runId);
       }
     });
   }
