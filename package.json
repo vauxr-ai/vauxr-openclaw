@@ -1,8 +1,18 @@
 {
   "name": "@vauxr/openclaw",
   "version": "0.1.0",
+  "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices.",
+  "license": "MIT",
   "type": "module",
   "main": "./index.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vauxr-ai/vauxr-openclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vauxr-ai/vauxr-openclaw/issues"
+  },
+  "homepage": "https://github.com/vauxr-ai/vauxr-openclaw#readme",
   "openclaw": {
     "extensions": [
       "./index.ts",
@@ -25,6 +35,5 @@
     "@types/ws": "^8.5.0",
     "openclaw": "^2026.4.2",
     "typescript": "^5.0.0"
-  },
-  "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices."
+  }
 }

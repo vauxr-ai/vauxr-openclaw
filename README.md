@@ -116,6 +116,25 @@ The agent tools are available in all sessions:
 > "Mute the bedroom speaker."
 > "Turn the volume up on the kitchen device."
 
+## Companion workflow: voice-reviewed X/Twitter
+
+Vauxr turns spoken requests into OpenClaw sessions, so it can sit beside high-impact tool plugins that need extra review. For example, [TweetClaw](https://github.com/Xquik-dev/tweetclaw) adds structured X/Twitter automation for scrape tweets, search tweets, search tweet replies, follower export, user lookup, media workflows, direct messages, monitor tweets, webhooks, giveaway draws, and reviewed post tweets or tweet replies.
+
+Install TweetClaw as a separate plugin:
+
+```bash
+openclaw plugins install @xquik/tweetclaw
+```
+
+Then keep Vauxr responsible for the voice channel and TweetClaw responsible for X/Twitter tools. Good voice workflows include:
+
+- "Search recent tweets about our launch and read me the top themes."
+- "Monitor replies to the campaign post and announce urgent support requests."
+- "Draft a reply to this tweet, but wait for review before posting."
+- "Run the giveaway draw after I confirm the tweet URL and rules."
+
+Because voice transcription can mishear names, accounts, and tweet IDs, require explicit confirmation before any visible action such as post tweets, post tweet replies, media upload, direct messages, follows, likes, or retweets. Keep auth material in protected local config, not in spoken transcripts, prompts, logs, or device announcements.
+
 ---
 
 ## Architecture
@@ -153,4 +172,3 @@ Vauxr device (speaker)
 ## License
 
 Vauxr OpenClaw is licensed under the [MIT License](LICENSE).
-
