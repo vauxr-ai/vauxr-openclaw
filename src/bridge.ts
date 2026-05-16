@@ -185,26 +185,23 @@ export class VauxrBridge {
       const runId = this.runIdMap.get(event.runId) ?? event.runId;
 
       if (event.stream === "assistant") {
-        // data.delta is the incremental chunk for streaming sessions;
-        // data.text is the accumulated text (or full text for single-shot).
-        // Prefer delta when present, fall back to text.
-        const chunk =
-          (typeof event.data["delta"] === "string" && event.data["delta"]) ||
-          (typeof event.data["text"] === "string" && event.data["text"]) ||
-          null;
-        // Filter out the silent-reply sentinel ("NO_REPLY") so it
-        // never reaches TTS. OpenClaw's runtime emits this token in the
-        // assistant stream when the agent declines to reply.
-        const isSilentSentinel =
-          typeof chunk === "string" &&
-          chunk.trim().toUpperCase() === "NO_REPLY";
-        if (chunk && !isSilentSentinel) {
-          this.send({
-            type: "channel.response.delta",
-            deviceId,
-            runId,
-            text: chunk,
-          });
+        // Only forward the incremental delta. data.text is the running
+        // accumulated reply — forwarding it as a delta would re-send
+        // the entire reply on top of the deltas we've already sent,
+        // duplicating it in TTS. The OpenClaw runtime emits at least
+        // one final assistant event per run with `{ text }` only (no
+        // `delta`); those carry no new content and must be dropped.
+        const delta = event.data["delta"];
+        if (typeof delta === "string" && delta.length > 0) {
+          const isSilentSentinel = delta.trim().toUpperCase() === "NO_REPLY";
+          if (!isSilentSentinel) {
+            this.send({
+              type: "channel.response.delta",
+              deviceId,
+              runId,
+              text: delta,
+            });
+          }
         }
       }
 
