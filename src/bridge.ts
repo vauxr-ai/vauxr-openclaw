@@ -39,12 +39,15 @@ export class VauxrBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeEvents: (() => void) | null = null;
   // Inflight turns keyed by deviceId. channel.turn.run doesn't surface an SDK
-  // runId to the caller (unlike the old subagent.run path), so we correlate
-  // emitted agent events back to the originating device by parsing the
-  // normalized sessionKey (`agent:<agentId>:vauxr:<deviceId>`) carried on
-  // each AgentEventPayload. One inflight turn per device at a time — voice
-  // devices serialize naturally (TTS finishes before the next utterance).
+  // runId to the caller (unlike the old subagent.run path), so dispatch-time
+  // bookkeeping is keyed by deviceId; we then latch onto the SDK runId on the
+  // first event that arrives carrying a sessionKey (typically lifecycle.start)
+  // and use that runId for all subsequent events from the same run. Most
+  // event streams (assistant/tool/item) do NOT carry sessionKey — only the
+  // lifecycle stream does — so runId-based correlation is load-bearing once
+  // we've latched. One inflight turn per device at a time.
   private activeRuns = new Map<string, ActiveVauxrTurn>(); // deviceId → turn
+  private runIdToTurn = new Map<string, ActiveVauxrTurn>(); // sdkRunId → turn
   // Per-device silent-reply sentinel state. "NO_REPLY" often arrives split
   // across streaming deltas (e.g. "NO" then "_REPLY"), so we buffer until
   // the accumulated text either matches the sentinel (suppress the whole
@@ -159,7 +162,15 @@ export class VauxrBridge {
   }
 
   private async dispatchTranscript(deviceId: string, text: string): Promise<void> {
-    const sessionKey = `vauxr:${deviceId}`;
+    const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
+    // Construct the sessionKey in the same form the old subagent.run path
+    // ended up producing after openclaw's internal normalization
+    // (`agent:<agentId>:vauxr:<deviceId>`). channel.turn.run does NOT apply
+    // that same normalization to routeSessionKey — it stores under whatever
+    // string we pass — so we have to build the full form ourselves to
+    // preserve session continuity with prior turns / restarts.
+    const agentId = resolveTargetAgentId(cfg);
+    const sessionKey = `agent:${agentId}:vauxr:${deviceId}`;
     // Protocol-level runId sent to vauxr-ws in response frames so it can
     // correlate delta/end/error chunks back to this transcript.
     const protocolRunId = crypto.randomUUID();
@@ -172,7 +183,6 @@ export class VauxrBridge {
     // agent runtime emits for this turn back to the originating device.
     this.activeRuns.set(deviceId, { deviceId, protocolRunId });
 
-    const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
     const storePath = this.api.runtime.channel.session.resolveStorePath(
       (cfg as { session?: { store?: string } }).session?.store,
     );
@@ -246,28 +256,43 @@ export class VauxrBridge {
     } finally {
       // channel.turn.run awaits the full turn (including the agent run inside
       // runDispatch), so by this point all events have fired and the turn is
-      // done. Safe to clean up correlation state here.
+      // done. Safe to clean up correlation state here. runIdToTurn entries
+      // for this device are cleaned in the lifecycle.end branch of the event
+      // handler — best-effort sweep here in case lifecycle.end never fired.
       this.activeRuns.delete(deviceId);
       this.sentinelBuffer.delete(deviceId);
       this.sentinelMode.delete(deviceId);
+      for (const [rid, turn] of this.runIdToTurn) {
+        if (turn.deviceId === deviceId) this.runIdToTurn.delete(rid);
+      }
     }
   }
 
   private subscribeAgentEvents(): void {
     this.unsubscribeEvents = this.api.runtime.events.onAgentEvent((event) => {
-      // Correlate by sessionKey. channel.turn.run doesn't return an SDK runId
-      // we could match against event.runId; instead the agent runtime tags
-      // each emitted event with the normalized sessionKey, which for vauxr
-      // turns is `agent:<agentId>:vauxr:<deviceId>`. Parse the deviceId out
-      // and look up the active turn we registered in dispatchTranscript.
+      // Two-stage correlation:
+      //   1. If the event carries a sessionKey (lifecycle events do, most
+      //      others don't), parse the deviceId and look up the inflight turn
+      //      we registered in dispatchTranscript. Cache the SDK runId so
+      //      subsequent sessionKey-less events from the same run can be
+      //      matched by runId alone.
+      //   2. Otherwise, look up by event.runId — populated by step (1) for
+      //      this turn's prior lifecycle event.
+      // pi-embedded's first lifecycle.start carries sessionKey and arrives
+      // well before any assistant deltas, so the latch is always primed
+      // before delta events need to route.
+      let active: ActiveVauxrTurn | undefined;
       const sk = event.sessionKey;
-      if (!sk) return;
-      const m = sk.match(/(?:^|:)vauxr:([^:]+)/);
-      if (!m) return;
-      const deviceId = m[1];
-      const active = this.activeRuns.get(deviceId);
+      if (sk) {
+        const m = sk.match(/(?:^|:)vauxr:([^:]+)/);
+        if (m) {
+          active = this.activeRuns.get(m[1]);
+          if (active) this.runIdToTurn.set(event.runId, active);
+        }
+      }
+      if (!active) active = this.runIdToTurn.get(event.runId);
       if (!active) return;
-      const runId = active.protocolRunId;
+      const { deviceId, protocolRunId: runId } = active;
 
       if (event.stream === "assistant") {
         // Only forward the incremental delta. data.text is the running
@@ -340,4 +365,37 @@ export class VauxrBridge {
       this.ws.send(JSON.stringify(frame));
     }
   }
+}
+
+/**
+ * Resolve the agent id that vauxr turns should route to.
+ *
+ * Preference order:
+ *   1. channels.vauxr.targetAgent (explicit operator config)
+ *   2. plugins.entries.vauxr.config.targetAgent (alternate config slot)
+ *   3. agents.list[].default === true
+ *   4. agents.list[0].id (first declared agent)
+ *   5. "default" sentinel (last resort — produces an obviously-wrong key the
+ *      operator can spot in logs)
+ */
+function resolveTargetAgentId(cfg: OpenClawConfig): string {
+  const raw = cfg as Record<string, unknown>;
+  const fromChannels = (raw.channels as Record<string, unknown> | undefined)?.vauxr as
+    | { targetAgent?: string }
+    | undefined;
+  if (fromChannels?.targetAgent) return fromChannels.targetAgent;
+  const fromPlugins = (
+    (raw.plugins as Record<string, unknown> | undefined)?.entries as
+      | Record<string, unknown>
+      | undefined
+  )?.vauxr as { config?: { targetAgent?: string } } | undefined;
+  if (fromPlugins?.config?.targetAgent) return fromPlugins.config.targetAgent;
+  const agents = (raw.agents as { list?: Array<{ id?: string; default?: boolean }> } | undefined)
+    ?.list;
+  if (Array.isArray(agents)) {
+    const defaultAgent = agents.find((a) => a.default && a.id);
+    if (defaultAgent?.id) return defaultAgent.id;
+    if (agents[0]?.id) return agents[0].id;
+  }
+  return "default";
 }
