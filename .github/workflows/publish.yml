@@ -54,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: Production
     permissions:
+      id-token: write
       contents: read
 
     steps:
@@ -61,8 +62,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
 
       - name: Extract version from tag
         id: version
@@ -79,8 +83,6 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   # On release published: publish to ClawHub (independent of npm)
   publish-clawhub:
@@ -93,10 +95,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update package.json version
+        run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
       - name: Publish to ClawHub
         run: |
           npm i -g clawhub
           clawhub login --token ${{ secrets.CLAWHUB_TOKEN }} --no-browser
-          VERSION="${{ github.event.release.tag_name }}"
-          VERSION="${VERSION#v}"
-          clawhub package publish . --name @vauxr/openclaw --version "$VERSION" --source-repo ${{ github.repository }} --source-commit ${{ github.sha }} --source-ref ${{ github.event.release.tag_name }}
+          clawhub package publish . --name @vauxr/openclaw --version "${{ steps.version.outputs.version }}" --source-repo ${{ github.repository }} --source-commit ${{ github.sha }} --source-ref ${{ github.event.release.tag_name }}
