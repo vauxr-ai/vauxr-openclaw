@@ -24,6 +24,15 @@
           "voiceSystemPrompt": {
             "type": "string",
             "description": "System prompt appended to vauxr voice sessions"
+          },
+          "alsoAllow": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra tool names to grant vauxr-originated agent runs (merged into the target agent's allowlist via toolsBySender). Requires targetAgent."
+          },
+          "targetAgent": {
+            "type": "string",
+            "description": "Id of the agent that handles vauxr sessions and should receive the alsoAllow expansion. Required when alsoAllow is set."
           }
         }
       }
@@ -49,6 +58,15 @@
           "voiceSystemPrompt": {
             "type": "string",
             "description": "Text appended to the system prompt for all vauxr sessions. Defaults to a voice-optimized instruction set."
+          },
+          "alsoAllow": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Extra tool names to grant vauxr-originated agent runs (merged into the target agent's allowlist via toolsBySender). Requires targetAgent."
+          },
+          "targetAgent": {
+            "type": "string",
+            "description": "Id of the agent that handles vauxr sessions and should receive the alsoAllow expansion. Required when alsoAllow is set."
           }
         }
       }

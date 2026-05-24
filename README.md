@@ -59,7 +59,13 @@ These tools use the Vauxr REST API and work in any session, not just vauxr voice
 
 ## Installation
 
-Install from the repo directly:
+Install from ClawHub 🦞
+
+```bash
+openclaw plugins install clawhub:@vauxr/openclaw
+```
+
+Or install from the repo directly:
 
 ```bash
 openclaw plugins install path:/path/to/vauxr-openclaw
@@ -90,10 +96,31 @@ Then configure in your OpenClaw config:
 ```
 
 - `url` — Vauxr base URL (HTTP)
-- `token` — channel token generated in the Vauxr portal
+- `token` — channel token generated in the Vauxr web client
 - `voiceSystemPrompt` — optional, appended to the system prompt for all vauxr sessions
+- `alsoAllow` — optional, extra tools to grant vauxr-originated agent runs (see below)
+- `targetAgent` — required if `alsoAllow` is set; the id of the agent that handles vauxr sessions
 
 The `allowPromptInjection` hook permission is required for the voice system prompt to take effect.
+
+### Granting broader tools to vauxr sessions
+
+OpenClaw's runtime treats the internal `webchat` channel more permissively than third-party channels: tools like `gateway` and `nodes` are stripped from vauxr-originated runs even when the agent's profile would otherwise allow them. To restore those tools on vauxr sessions, set `alsoAllow` and `targetAgent`:
+
+```json
+{
+  "channels": {
+    "vauxr": {
+      "url": "http://vauxr:8765",
+      "token": "your-channel-token",
+      "alsoAllow": ["gateway", "nodes"],
+      "targetAgent": "nova-cloud"
+    }
+  }
+}
+```
+
+On configure, the plugin writes a `channel:vauxr:*` entry into `agents.list[id=targetAgent].tools.toolsBySender`. The expansion is scoped to vauxr-originated runs only — other channels are unaffected. Be deliberate about what you grant: `gateway` lets the model restart OpenClaw, `nodes` lets it invoke commands on connected hardware nodes.
 
 ---
 

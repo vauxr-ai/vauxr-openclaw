@@ -53,9 +53,12 @@ const entry = defineChannelPluginEntry({
       bridge.start();
     }
 
-    // Voice system prompt injection for vauxr sessions
+    // Voice system prompt injection for vauxr sessions. Match both the bare
+    // form (`vauxr:<deviceId>`) used by the old subagent.run path and the
+    // fully-prefixed form (`agent:<agentId>:vauxr:<deviceId>`) used by the
+    // current channel.turn.run path. Either form means it's a vauxr turn.
     api.on("before_prompt_build", (_event, ctx) => {
-      if (ctx.sessionKey?.startsWith("vauxr:")) {
+      if (ctx.sessionKey && /(?:^|:)vauxr:/.test(ctx.sessionKey)) {
         return {
           appendSystemContext: config.voiceSystemPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT,
         };

@@ -42,12 +42,13 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         }),
       }),
       async execute(_id, params) {
-        await client.announce(params.device_id, params.text);
+        const p = params as { device_id: string; text: string };
+        await client.announce(p.device_id, p.text);
         return {
           content: [
             {
               type: "text" as const,
-              text: `Announced on device ${params.device_id}: "${params.text}"`,
+              text: `Announced on device ${p.device_id}: "${p.text}"`,
             },
           ],
           details: {},
@@ -83,14 +84,19 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         ),
       }),
       async execute(_id, params) {
+        const p = params as {
+          device_id: string;
+          command: "set_volume" | "mute" | "unmute" | "reboot";
+          volume?: number;
+        };
         const cmdParams: Record<string, unknown> | undefined =
-          params.command === "set_volume" ? { volume: params.volume } : undefined;
-        await client.command(params.device_id, params.command, cmdParams);
+          p.command === "set_volume" ? { volume: p.volume } : undefined;
+        await client.command(p.device_id, p.command, cmdParams);
         return {
           content: [
             {
               type: "text" as const,
-              text: `Sent ${params.command} to device ${params.device_id}${params.command === "set_volume" ? ` (volume: ${params.volume})` : ""}`,
+              text: `Sent ${p.command} to device ${p.device_id}${p.command === "set_volume" ? ` (volume: ${p.volume})` : ""}`,
             },
           ],
           details: {},
