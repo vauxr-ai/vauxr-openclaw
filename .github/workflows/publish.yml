@@ -81,8 +81,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build
+        run: npm run build
+
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --access public --tag latest
 
   # On release published: publish to ClawHub (independent of npm)
   publish-clawhub:
@@ -95,6 +98,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Extract version from tag
         id: version
         run: |
@@ -104,6 +111,12 @@ jobs:
 
       - name: Update package.json version
         run: npm version ${{ steps.version.outputs.version }} --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
 
       - name: Publish to ClawHub
         run: |
