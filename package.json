@@ -2,11 +2,18 @@
   "name": "@vauxr/openclaw",
   "version": "0.1.0",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
   "openclaw": {
     "extensions": [
-      "./index.ts",
-      "./setup-entry.ts"
+      "./dist/index.js",
+      "./dist/setup-entry.js"
     ],
     "compat": {
       "pluginApi": ">=2026.5.12",
