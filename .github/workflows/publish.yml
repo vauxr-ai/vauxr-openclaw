@@ -24,18 +24,27 @@ jobs:
         run: |
           TODAY=$(date -u +"%-Y.%-m.%-d")
 
-          EXISTING=$(gh api repos/${{ github.repository }}/git/refs/tags \
-            --paginate --jq '.[].ref' 2>/dev/null \
-            | grep "^refs/tags/v${TODAY}-" || true)
+          ALL_TAGS=$(gh api repos/${{ github.repository }}/git/refs/tags \
+            --paginate --jq '.[].ref' 2>/dev/null || true)
 
-          if [ -z "$EXISTING" ]; then
-            N=0
-          else
-            MAX_N=$(echo "$EXISTING" | sed "s|refs/tags/v${TODAY}-||" | sort -n | tail -1)
-            N=$((MAX_N + 1))
+          BASE_TAG="refs/tags/v${TODAY}"
+          HAS_BASE=false
+          if echo "$ALL_TAGS" | grep -qxF "$BASE_TAG"; then
+            HAS_BASE=true
           fi
 
-          VERSION="${TODAY}-${N}"
+          SUFFIX_TAGS=$(echo "$ALL_TAGS" | grep "^refs/tags/v${TODAY}-" || true)
+
+          if [ "$HAS_BASE" = false ] && [ -z "$SUFFIX_TAGS" ]; then
+            VERSION="${TODAY}"
+          else
+            MAX_N=0
+            if [ -n "$SUFFIX_TAGS" ]; then
+              MAX_N=$(echo "$SUFFIX_TAGS" | sed "s|refs/tags/v${TODAY}-||" | sort -n | tail -1)
+            fi
+            VERSION="${TODAY}-$((MAX_N + 1))"
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Computed version: $VERSION"
 
