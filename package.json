@@ -26,5 +26,9 @@
     "openclaw": "^2026.5.12",
     "typescript": "^5.0.0"
   },
-  "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices."
+  "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vauxr-ai/vauxr-openclaw.git"
+  }
 }
