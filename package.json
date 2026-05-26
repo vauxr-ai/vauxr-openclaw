@@ -20,8 +20,8 @@
       "minGatewayVersion": "2026.5.12"
     },
     "build": {
-      "openclawVersion": "2026.5.12",
-      "pluginSdkVersion": "2026.5.12"
+      "openclawVersion": "2026.5.22",
+      "pluginSdkVersion": "2026.5.22"
     }
   },
   "dependencies": {
