@@ -13,7 +13,7 @@ export interface VauxrAccount {
 export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
   base: createChannelPluginBase<VauxrAccount>({
     id: "vauxr",
-    meta: { label: "Vauxr" },
+    meta: { label: "Vauxr", selectionLabel: "Vauxr (voice devices)", docsPath: "/channels/vauxr", blurb: "Speak through and control Vauxr voice devices on your LAN." },
     capabilities: {
       chatTypes: ["direct"],
     },

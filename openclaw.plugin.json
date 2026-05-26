@@ -4,6 +4,7 @@
   "channels": ["vauxr"],
   "name": "Vauxr",
   "description": "Vauxr voice device channel plugin for OpenClaw",
+  "contracts": { "tools": ["vauxr_devices", "vauxr_announce", "vauxr_control"] },
   "channelConfigs": {
     "vauxr": {
       "label": "Vauxr",
