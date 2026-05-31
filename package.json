@@ -16,12 +16,12 @@
       "./dist/setup-entry.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.5.12",
-      "minGatewayVersion": "2026.5.12"
+      "pluginApi": ">=2026.5.28",
+      "minGatewayVersion": "2026.5.28"
     },
     "build": {
-      "openclawVersion": "2026.5.12",
-      "pluginSdkVersion": "2026.5.12"
+      "openclawVersion": "2026.5.28",
+      "pluginSdkVersion": "2026.5.28"
     }
   },
   "dependencies": {
@@ -30,7 +30,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.0",
-    "openclaw": "^2026.5.12",
+    "openclaw": "^2026.5.28",
     "typescript": "^5.0.0"
   },
   "description": "An OpenClaw plugin that gives your agents the ability to speak through and control Vauxr voice assistant devices.",

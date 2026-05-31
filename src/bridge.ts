@@ -38,6 +38,7 @@ export class VauxrBridge {
   private reconnectMs = INITIAL_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeEvents: (() => void) | null = null;
+  private started = false;
   // Inflight turns keyed by deviceId. channel.turn.run doesn't surface an SDK
   // runId to the caller (unlike the old subagent.run path), so dispatch-time
   // bookkeeping is keyed by deviceId; we then latch onto the SDK runId on the
@@ -66,11 +67,15 @@ export class VauxrBridge {
   }
 
   start(): void {
+    if (this.started) return;
+    this.started = true;
     this.connect();
     this.subscribeAgentEvents();
   }
 
   stop(): void {
+    if (!this.started) return;
+    this.started = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -83,16 +88,21 @@ export class VauxrBridge {
       this.ws.close();
       this.ws = null;
     }
+    // Reset the backoff so a subsequent stop/start cycle (e.g. channel
+    // aborts then restarts) begins reconnecting at INITIAL_RECONNECT_MS
+    // instead of inheriting whatever escalated delay the previous run
+    // had accumulated.
+    this.reconnectMs = INITIAL_RECONNECT_MS;
   }
 
   private connect(): void {
-    this.api.logger.info(`[vauxr-bridge] Connecting to vauxr: ${this.wsUrl}`);
+    this.api.logger.debug?.(`[vauxr-bridge] Connecting to vauxr: ${this.wsUrl}`);
 
     const ws = new WebSocket(this.wsUrl);
     this.ws = ws;
 
     ws.on("open", () => {
-      this.api.logger.info("[vauxr-bridge] Connected to vauxr");
+      this.api.logger.debug?.("[vauxr-bridge] Connected to vauxr");
       this.reconnectMs = INITIAL_RECONNECT_MS;
 
       // Authenticate with channel token
@@ -111,9 +121,15 @@ export class VauxrBridge {
     });
 
     ws.on("close", () => {
-      this.api.logger.info("[vauxr-bridge] Disconnected from vauxr");
+      this.api.logger.debug?.("[vauxr-bridge] Disconnected from vauxr");
+      // Identity check: a stop() during the close-event async delay can be
+      // followed by another start() that opens a fresh ws. If we cleared
+      // `this.ws` blindly here we'd wipe the new socket's reference and
+      // also fire a duplicate reconnect. Only act if we're still the
+      // bridge's current ws.
+      if (this.ws !== ws) return;
       this.ws = null;
-      this.scheduleReconnect();
+      if (this.started) this.scheduleReconnect();
     });
 
     ws.on("error", (err) => {
@@ -124,7 +140,7 @@ export class VauxrBridge {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
-    this.api.logger.info(
+    this.api.logger.debug?.(
       `[vauxr-bridge] Reconnecting in ${this.reconnectMs}ms`,
     );
     this.reconnectTimer = setTimeout(() => {
@@ -147,7 +163,7 @@ export class VauxrBridge {
         );
         break;
       case "channel.ready":
-        this.api.logger.info("[vauxr-bridge] Channel authenticated");
+        this.api.logger.debug?.("[vauxr-bridge] Channel authenticated");
         break;
       case "error":
         this.api.logger.warn(
@@ -202,7 +218,13 @@ export class VauxrBridge {
     };
 
     try {
-      await this.api.runtime.channel.turn.run({
+      // OpenClaw 2026.5.28 renamed `runtime.channel.turn` to
+      // `runtime.channel.inbound` (pure rename — same signature, same
+      // ChannelInboundEventRunnerParams shape as the prior
+      // RunChannelTurnParams). Earlier vauxr-openclaw releases that
+      // referenced `.turn.run` will throw `Cannot read properties of
+      // undefined (reading 'run')` on gateways 2026.5.28+.
+      await this.api.runtime.channel.inbound.run({
         channel: "vauxr",
         raw: { deviceId, text },
         adapter: {
