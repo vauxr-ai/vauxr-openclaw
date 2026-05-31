@@ -83,9 +83,28 @@ vauxrPlugin.config.isConfigured = (_account: unknown, cfg: OpenClawConfig) => {
 
 vauxrPlugin.gateway = {
   startAccount: async (ctx: { abortSignal: AbortSignal }) => {
-    await new Promise<void>((resolve) => {
-      ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-    });
+    // If the channel was aborted before startAccount even ran, there's no
+    // bridge to start and nothing to clean up — short-circuit.
+    if (ctx.abortSignal.aborted) return;
+    const g = globalThis as { __vauxrBridge?: { start(): void; stop(): void } };
+    g.__vauxrBridge?.start();
+    try {
+      await new Promise<void>((resolve) => {
+        // Guard against the race where the signal aborts between the
+        // top-of-function check and the listener attach below. In that
+        // window `addEventListener("abort", ...)` would never fire,
+        // hanging startAccount forever.
+        if (ctx.abortSignal.aborted) {
+          resolve();
+          return;
+        }
+        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    } finally {
+      // Always stop the bridge on the way out — covers normal abort,
+      // already-aborted-after-attach, and any thrown error in between.
+      g.__vauxrBridge?.stop();
+    }
   },
 };
 

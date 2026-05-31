@@ -42,15 +42,20 @@ const entry = defineChannelPluginEntry({
     const client = new VauxrAPIClient(httpBase, config.token ?? "");
     registerTools(api, client);
 
-    // WS bridge to vauxr — guard against double-registration.
-    // OpenClaw invokes registerFull from multiple subsystems in the same
-    // process; without this flag, both bridges would contend for the
-    // single active channel slot in vauxr and flap continuously.
-    const g = globalThis as { __vauxrBridgeStarted?: boolean };
-    if (!g.__vauxrBridgeStarted) {
-      g.__vauxrBridgeStarted = true;
-      const bridge = new VauxrBridge(api, config);
-      bridge.start();
+    // Construct the WS bridge but DO NOT start it here. `registerFull` is
+    // invoked from introspection paths too (e.g. `openclaw doctor`), and
+    // starting the bridge here would open a live WebSocket to vauxr during
+    // diagnostics. The bridge is started later by `gateway.startAccount`
+    // (see channel.ts), which only fires when the gateway is actually
+    // bringing the channel up for runtime use. The globalThis stash bridges
+    // the two scopes because `startAccount` doesn't have access to `api`.
+    //
+    // The single-bridge guard remains here so multiple `registerFull`
+    // invocations in the same process don't reconstruct the bridge — they'd
+    // contend for the single active channel slot in vauxr otherwise.
+    const g = globalThis as { __vauxrBridge?: VauxrBridge };
+    if (!g.__vauxrBridge) {
+      g.__vauxrBridge = new VauxrBridge(api, config);
     }
 
     // Voice system prompt injection for vauxr sessions. Match both the bare
