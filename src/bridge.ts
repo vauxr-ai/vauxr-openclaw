@@ -88,6 +88,11 @@ export class VauxrBridge {
       this.ws.close();
       this.ws = null;
     }
+    // Reset the backoff so a subsequent stop/start cycle (e.g. channel
+    // aborts then restarts) begins reconnecting at INITIAL_RECONNECT_MS
+    // instead of inheriting whatever escalated delay the previous run
+    // had accumulated.
+    this.reconnectMs = INITIAL_RECONNECT_MS;
   }
 
   private connect(): void {
