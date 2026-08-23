@@ -90,7 +90,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         url: Type.Optional(
           Type.String({
             description:
-              "Firmware HTTP(S) URL for ota. Required unless otaPublicBase is configured. Must be reachable by the device (LAN IP, not Docker DNS).",
+              "Firmware HTTP(S) URL for ota. Required unless otaPublicBase is configured. Must be reachable by the device (not Docker DNS).",
           }),
         ),
       }),
