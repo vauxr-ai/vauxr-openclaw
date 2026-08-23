@@ -43,9 +43,11 @@ To use fallback mode, configure Vauxr with `OPENCLAW_URL` and `OPENCLAW_TOKEN` e
 |---|---|
 | `vauxr_devices` | Lists all Vauxr devices connected to Vauxr, with their IDs, names, and connection state |
 | `vauxr_announce` | Synthesizes text via Piper TTS and plays it through a device's speaker |
-| `vauxr_control` | Sends a control command to a device (`set_volume`, `mute`, `unmute`, `reboot`, `ota`) |
+| `vauxr_control` | Sends a control command to a device (`set_volume`, `mute`, `unmute`, `reboot`, `ota`, `set_barge_in`) |
 
 These tools use the Vauxr REST API and work in any session, not just vauxr voice sessions.
+
+`set_barge_in` takes `enabled: true | false`. It is stored on the Vauxr server (not firmware). Disable it if echo causes the speaker to interrupt itself while the assistant is talking.
 
 ---
 
