@@ -11,6 +11,7 @@ interface VauxrConfig {
   httpUrl?: string;
   token?: string;
   voiceSystemPrompt?: string;
+  otaPublicBase?: string;
 }
 
 function resolveConfig(api: OpenClawPluginApi): VauxrConfig {
@@ -39,7 +40,7 @@ const entry = defineChannelPluginEntry({
       return;
     }
 
-    const client = new VauxrAPIClient(httpBase, config.token ?? "");
+    const client = new VauxrAPIClient(httpBase, config.token ?? "", config.otaPublicBase);
     registerTools(api, client);
 
     // Construct the WS bridge but DO NOT start it here. `registerFull` is

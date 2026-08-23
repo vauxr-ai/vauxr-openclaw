@@ -5,7 +5,11 @@ import type { VauxrAPIClient, Device } from "./api-client.js";
 function formatDeviceList(devices: Device[]): string {
   if (devices.length === 0) return "No devices connected.";
   return devices
-    .map((d) => `• ${d.name} (id: ${d.id}) — ${d.state}, last seen ${d.lastSeen}`)
+    .map((d) => {
+      const hw = [d.platform, d.fw_version].filter(Boolean).join(" ");
+      const extra = hw ? `, ${hw}` : "";
+      return `• ${d.name} (id: ${d.id}) — ${d.state}${extra}, last seen ${d.lastSeen}`;
+    })
     .join("\n");
 }
 
@@ -63,7 +67,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
       name: "vauxr_control",
       label: "Vauxr Control",
       description:
-        "Send a control command to a Vauxr voice device (set volume, mute, unmute, or reboot).",
+        "Send a control command to a Vauxr voice device (set volume, mute, unmute, reboot, or ota).",
       parameters: Type.Object({
         device_id: Type.String({ description: "ID of the device to control" }),
         command: Type.Union(
@@ -72,6 +76,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
             Type.Literal("mute"),
             Type.Literal("unmute"),
             Type.Literal("reboot"),
+            Type.Literal("ota"),
           ],
           { description: "The control command to send" },
         ),
@@ -82,21 +87,38 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
             maximum: 100,
           }),
         ),
+        url: Type.Optional(
+          Type.String({
+            description:
+              "Firmware HTTP(S) URL for ota. Defaults to {otaPublicBase}/firmware/satellite1.bin. Must be reachable by the device (LAN IP, not Docker DNS).",
+          }),
+        ),
       }),
       async execute(_id, params) {
         const p = params as {
           device_id: string;
-          command: "set_volume" | "mute" | "unmute" | "reboot";
+          command: "set_volume" | "mute" | "unmute" | "reboot" | "ota";
           volume?: number;
+          url?: string;
         };
-        const cmdParams: Record<string, unknown> | undefined =
-          p.command === "set_volume" ? { volume: p.volume } : undefined;
+        let cmdParams: Record<string, unknown> | undefined;
+        if (p.command === "set_volume") {
+          cmdParams = { volume: p.volume };
+        } else if (p.command === "ota") {
+          cmdParams = { url: p.url?.trim() || client.defaultOtaUrl() };
+        }
         await client.command(p.device_id, p.command, cmdParams);
+        const extra =
+          p.command === "set_volume"
+            ? ` (volume: ${p.volume})`
+            : p.command === "ota"
+              ? ` (url: ${cmdParams?.url})`
+              : "";
         return {
           content: [
             {
               type: "text" as const,
-              text: `Sent ${p.command} to device ${p.device_id}${p.command === "set_volume" ? ` (volume: ${p.volume})` : ""}`,
+              text: `Sent ${p.command} to device ${p.device_id}${extra}`,
             },
           ],
           details: {},
