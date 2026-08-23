@@ -90,7 +90,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         url: Type.Optional(
           Type.String({
             description:
-              "Firmware HTTP(S) URL for ota. Defaults to {otaPublicBase}/firmware/satellite1.bin. Must be reachable by the device (LAN IP, not Docker DNS).",
+              "Firmware HTTP(S) URL for ota. Required unless otaPublicBase is configured. Must be reachable by the device (LAN IP, not Docker DNS).",
           }),
         ),
       }),
@@ -105,7 +105,13 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         if (p.command === "set_volume") {
           cmdParams = { volume: p.volume };
         } else if (p.command === "ota") {
-          cmdParams = { url: p.url?.trim() || client.defaultOtaUrl() };
+          const url = p.url?.trim() || client.defaultOtaUrl();
+          if (!url) {
+            throw new Error(
+              "ota requires params.url, or set channels.vauxr.otaPublicBase to a LAN origin the device can fetch (not Docker DNS)",
+            );
+          }
+          cmdParams = { url };
         }
         await client.command(p.device_id, p.command, cmdParams);
         const extra =

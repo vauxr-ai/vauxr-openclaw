@@ -14,8 +14,9 @@ export class VauxrAPIClient {
     private otaPublicBase?: string,
   ) {}
 
-  defaultOtaUrl(filename = "satellite1.bin"): string {
-    const base = (this.otaPublicBase || this.baseUrl).replace(/\/$/, "");
+  defaultOtaUrl(filename = "satellite1.bin"): string | undefined {
+    const base = this.otaPublicBase?.replace(/\/$/, "");
+    if (!base) return undefined;
     return `${base}/firmware/${filename}`;
   }
 
