@@ -5,6 +5,11 @@ export interface Device {
   lastSeen: string;
   platform?: string;
   fw_version?: string;
+  config?: {
+    name?: string;
+    follow_up_mode?: string;
+    barge_in?: boolean;
+  };
 }
 
 export class VauxrAPIClient {
