@@ -3,13 +3,27 @@ export interface Device {
   name: string;
   state: "idle" | "listening" | "processing" | "speaking" | "offline";
   lastSeen: string;
+  platform?: string;
+  fw_version?: string;
+  config?: {
+    name?: string;
+    follow_up_mode?: string;
+    barge_in?: boolean;
+  };
 }
 
 export class VauxrAPIClient {
   constructor(
     private baseUrl: string,
     private token: string,
+    private otaPublicBase?: string,
   ) {}
+
+  defaultOtaUrl(filename = "satellite1.bin"): string | undefined {
+    const base = this.otaPublicBase?.replace(/\/$/, "");
+    if (!base) return undefined;
+    return `${base}/firmware/${filename}`;
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${this.baseUrl}${path}`;

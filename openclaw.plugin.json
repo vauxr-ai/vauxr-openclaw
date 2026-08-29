@@ -16,7 +16,7 @@
         "properties": {
           "url": {
             "type": "string",
-            "description": "Vauxr base URL (e.g. http://192.168.1.100:8765)"
+            "description": "Vauxr base URL (e.g. http://vauxr.local:8765)"
           },
           "token": {
             "type": "string",
@@ -34,6 +34,14 @@
           "targetAgent": {
             "type": "string",
             "description": "Id of the agent that handles vauxr sessions and should receive the alsoAllow expansion. Required when alsoAllow is set."
+          },
+          "httpUrl": {
+            "type": "string",
+            "description": "Vauxr HTTP API base (defaults to url with :8765 replaced by :8080)"
+          },
+          "otaPublicBase": {
+            "type": "string",
+            "description": "Origin the device uses to fetch firmware, e.g. http://vauxr.local:8080. Used as the default OTA URL base."
           }
         }
       }
@@ -68,6 +76,14 @@
           "targetAgent": {
             "type": "string",
             "description": "Id of the agent that handles vauxr sessions and should receive the alsoAllow expansion. Required when alsoAllow is set."
+          },
+          "httpUrl": {
+            "type": "string",
+            "description": "Vauxr HTTP API base (defaults to url with :8765 replaced by :8080)"
+          },
+          "otaPublicBase": {
+            "type": "string",
+            "description": "Origin the device uses to fetch firmware, e.g. http://vauxr.local:8080. Used as the default OTA URL base."
           }
         }
       }

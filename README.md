@@ -43,9 +43,11 @@ To use fallback mode, configure Vauxr with `OPENCLAW_URL` and `OPENCLAW_TOKEN` e
 |---|---|
 | `vauxr_devices` | Lists all Vauxr devices connected to Vauxr, with their IDs, names, and connection state |
 | `vauxr_announce` | Synthesizes text via Piper TTS and plays it through a device's speaker |
-| `vauxr_control` | Sends a control command to a device (`set_volume`, `mute`, `unmute`, `reboot`) |
+| `vauxr_control` | Sends a control command to a device (`set_volume`, `mute`, `unmute`, `reboot`, `ota`, `set_barge_in`) |
 
 These tools use the Vauxr REST API and work in any session, not just vauxr voice sessions.
+
+`set_barge_in` takes `enabled: true | false`. It is stored on the Vauxr server (not firmware). Disable it if echo causes the speaker to interrupt itself while the assistant is talking.
 
 ---
 
@@ -79,6 +81,7 @@ Then configure in your OpenClaw config:
     "vauxr": {
       "url": "http://vauxr:8765",
       "token": "your-channel-token",
+      "otaPublicBase": "http://vauxr.local:8080",
       "voiceSystemPrompt": "You are responding to a voice device. Use plain speech only — no emojis, no markdown, no code blocks. Keep replies concise."
     }
   },
@@ -100,6 +103,7 @@ Then configure in your OpenClaw config:
 - `voiceSystemPrompt` — optional, appended to the system prompt for all vauxr sessions
 - `alsoAllow` — optional, extra tools to grant vauxr-originated agent runs (see below)
 - `targetAgent` — required if `alsoAllow` is set; the id of the agent that handles vauxr sessions
+- `otaPublicBase` — Origin the device uses to download firmware (e.g. `http://vauxr.local:8080`). Required for default OTA when the tool is called without `url`. Must be reachable by the speaker — do not use a Docker DNS name.
 
 The `allowPromptInjection` hook permission is required for the voice system prompt to take effect.
 
@@ -136,6 +140,7 @@ The agent tools are available in all sessions:
 **Device control:**
 > "Mute the bedroom speaker."
 > "Turn the volume up on the kitchen device."
+> "OTA the living room speaker with http://vauxr.local:8080/firmware/satellite1.bin"
 
 ---
 
