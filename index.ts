@@ -14,6 +14,15 @@ interface VauxrConfig {
   otaPublicBase?: string;
 }
 
+function hasConversationAccess(api: OpenClawPluginApi): boolean {
+  const cfg = api.config as Record<string, unknown>;
+  const plugins = cfg.plugins as Record<string, unknown> | undefined;
+  const entries = plugins?.entries as Record<string, unknown> | undefined;
+  const entry = entries?.vauxr as Record<string, unknown> | undefined;
+  const hooks = entry?.hooks as Record<string, unknown> | undefined;
+  return hooks?.allowConversationAccess === true;
+}
+
 function resolveConfig(api: OpenClawPluginApi): VauxrConfig {
   if (api.pluginConfig && typeof api.pluginConfig === "object" && "url" in api.pluginConfig) {
     return api.pluginConfig as unknown as VauxrConfig;
@@ -57,6 +66,19 @@ const entry = defineChannelPluginEntry({
     const g = globalThis as { __vauxrBridge?: VauxrBridge };
     if (!g.__vauxrBridge) {
       g.__vauxrBridge = new VauxrBridge(api, config);
+    }
+
+    // Since OpenClaw 2026.8, non-bundled plugins need explicit consent to use
+    // before_prompt_build. Without it the gateway silently blocks the hook and
+    // voice sessions lose their system prompt (devices reply with markdown,
+    // emojis, no follow-up tags). Warn loudly with the exact fix.
+    if (!hasConversationAccess(api)) {
+      api.logger.warn(
+        "[vauxr] Voice system prompt injection is DISABLED: OpenClaw blocks the " +
+          "before_prompt_build hook for non-bundled plugins without consent. Fix with: " +
+          "openclaw config set plugins.entries.vauxr.hooks.allowConversationAccess true " +
+          "— then restart the gateway.",
+      );
     }
 
     // Voice system prompt injection for vauxr sessions. Match both the bare
