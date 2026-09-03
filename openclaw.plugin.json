@@ -1,5 +1,6 @@
 {
   "id": "vauxr",
+  "legacyPluginIds": ["vauxr/index", "vauxr/setup-entry"],
   "kind": "channel",
   "channels": ["vauxr"],
   "name": "Vauxr",
