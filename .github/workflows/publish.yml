@@ -131,4 +131,13 @@ jobs:
         run: |
           npm i -g clawhub
           clawhub login --token ${{ secrets.CLAWHUB_TOKEN }} --no-browser
-          clawhub package publish . --name @vauxr/openclaw --version "${{ steps.version.outputs.version }}" --source-repo ${{ github.repository }} --source-commit ${{ github.sha }} --source-ref ${{ github.event.release.tag_name }}
+          for attempt in 1 2 3; do
+            if clawhub package publish . --name @vauxr/openclaw --version "${{ steps.version.outputs.version }}" --source-repo ${{ github.repository }} --source-commit ${{ github.sha }} --source-ref ${{ github.event.release.tag_name }}; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "ClawHub publish failed; retrying in 60 seconds (attempt $((attempt + 1)) of 3)"
+              sleep 60
+            fi
+          done
+          exit 1
