@@ -154,7 +154,15 @@ export class VauxrBridge {
     switch (frame.type) {
       case "channel.transcript":
         if (frame.deviceId && frame.text) {
-          void this.dispatchTranscript(frame.deviceId, frame.text);
+          // Never let a dispatch failure escape the ws message handler: an
+          // unhandled rejection here takes down the whole gateway process.
+          void this.dispatchTranscript(frame.deviceId, frame.text).catch(
+            (err) => {
+              this.api.logger.warn(
+                `[vauxr-bridge] Unhandled transcript dispatch error for ${frame.deviceId}: ${String(err)}`,
+              );
+            },
+          );
         }
         break;
       case "channel.device_state":
@@ -199,10 +207,6 @@ export class VauxrBridge {
     // agent runtime emits for this turn back to the originating device.
     this.activeRuns.set(deviceId, { deviceId, protocolRunId });
 
-    const storePath = this.api.runtime.channel.session.resolveStorePath(
-      (cfg as { session?: { store?: string } }).session?.store,
-    );
-
     // Minimal inbound context. Voice channels don't carry replies, media,
     // mentions, forwards, etc. — most MsgContext fields stay undefined.
     const ctxPayload = {
@@ -218,6 +222,15 @@ export class VauxrBridge {
     };
 
     try {
+      // OpenClaw 2026.8 requires an explicit agent id when resolving session
+      // store paths (SessionStoreAgentIdRequiredError otherwise). Older
+      // gateways ignore the extra options argument. Kept inside the try so a
+      // future API change degrades to an error frame instead of a crash.
+      const storePath = this.api.runtime.channel.session.resolveStorePath(
+        (cfg as { session?: { store?: string } }).session?.store,
+        { agentId },
+      );
+
       // OpenClaw 2026.5.28 renamed `runtime.channel.turn` to
       // `runtime.channel.inbound` (pure rename — same signature, same
       // ChannelInboundEventRunnerParams shape as the prior
@@ -261,6 +274,25 @@ export class VauxrBridge {
                 cfg,
                 dispatcher,
               });
+            },
+            // Required since OpenClaw 2026.8 for inbound adapters. Voice
+            // turns are non-durable, so there is no adoption lifecycle. If
+            // the kernel skips dispatch, tell the device instead of leaving
+            // it waiting for TTS that will never arrive; correlation state
+            // is swept by dispatchTranscript's finally block.
+            runDispatchLifecycle: {
+              turnAdoptionLifecycle: undefined,
+              onDispatchSkipped: (reason: unknown) => {
+                this.api.logger.warn(
+                  `[vauxr-bridge] Dispatch skipped for ${sessionKey}: ${JSON.stringify(reason)}`,
+                );
+                this.send({
+                  type: "channel.response.error",
+                  deviceId,
+                  runId: protocolRunId,
+                  message: `dispatch skipped: ${JSON.stringify(reason)}`,
+                });
+              },
             },
           }),
         },
