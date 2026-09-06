@@ -4,6 +4,8 @@ An OpenClaw channel plugin that bridges Vauxr voice devices into the OpenClaw ag
 
 It also registers three agent tools for direct device control from any session.
 
+See [ROADMAP.md](./ROADMAP.md) for plugin-only remaining work.
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ---
@@ -157,7 +159,7 @@ Vauxr (STT: Whisper)
     ▼
 vauxr-openclaw plugin
     │
-    │  subagent.run(sessionKey: "vauxr:{device_id}")
+    │  channel.turn.run(sessionKey: "vauxr:{device_id}")
     ▼
 OpenClaw agent loop
     │
