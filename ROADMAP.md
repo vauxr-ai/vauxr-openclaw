@@ -1,6 +1,6 @@
 # vauxr-openclaw Roadmap
 
-Plugin-only remaining work. Server items live in [vauxr/ROADMAP.md](https://github.com/vauxr-ai/vauxr/blob/develop/ROADMAP.md); firmware in [vauxr-assistant/ROADMAP.md](https://github.com/vauxr-ai/vauxr-assistant/blob/develop/ROADMAP.md).
+Plugin-only remaining work. Server items live in [vauxr/ROADMAP.md](https://github.com/vauxr-ai/vauxr/blob/develop/ROADMAP.md).
 
 Features grouped by theme. No ordering assigned.
 
