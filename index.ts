@@ -4,7 +4,7 @@ import { vauxrPlugin } from "./src/channel.js";
 import { VauxrAPIClient } from "./src/api-client.js";
 import { registerTools } from "./src/tools.js";
 import { VauxrBridge } from "./src/bridge.js";
-import { buildVoicePromptContext } from "./src/reply-routing.js";
+import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./src/defaults.js";
 
 interface VauxrConfig {
   url: string;
@@ -81,10 +81,18 @@ const entry = defineChannelPluginEntry({
       );
     }
 
-    // Rebuilt each turn, including after reset. OpenClaw still owns hook consent.
-    api.on("before_prompt_build", (_event, ctx) =>
-      buildVoicePromptContext(ctx, config.voiceSystemPrompt),
-    );
+    // Voice system prompt injection for vauxr sessions. Match both the bare
+    // form (`vauxr:<deviceId>`) used by the old subagent.run path and the
+    // fully-prefixed form (`agent:<agentId>:vauxr:<deviceId>`) used by the
+    // current channel.turn.run path. Either form means it's a vauxr turn.
+    api.on("before_prompt_build", (_event, ctx) => {
+      if (ctx.sessionKey && /(?:^|:)vauxr:/.test(ctx.sessionKey)) {
+        return {
+          appendSystemContext: config.voiceSystemPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT,
+        };
+      }
+      return undefined;
+    });
   },
 });
 

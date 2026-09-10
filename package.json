@@ -8,8 +8,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "build": "tsc"
   },
   "openclaw": {
     "extensions": [

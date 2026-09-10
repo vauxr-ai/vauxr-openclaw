@@ -38,7 +38,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
       name: "vauxr_announce",
       label: "Vauxr Announce",
       description:
-        "Only when the user explicitly requests a separate announcement or speech through a Vauxr voice device. Do not use this tool for ordinary replies to incoming voice turns or as a workaround for unavailable message delivery. The text will be synthesized to speech and played through the device's speaker. Use `vauxr_devices` first if you don't know the device ID.",
+        "Announce a spoken message through a Vauxr voice device. The text will be synthesized to speech and played through the device's speaker. Use `vauxr_devices` first if you don't know the device ID.",
       parameters: Type.Object({
         device_id: Type.String({ description: "ID of the device to speak through" }),
         text: Type.String({
