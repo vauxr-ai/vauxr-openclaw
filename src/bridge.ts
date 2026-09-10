@@ -273,6 +273,9 @@ export class VauxrBridge {
                 ctx: ctxPayload as never,
                 cfg,
                 dispatcher,
+                // Voice replies are streamed to the originating device above.
+                // Do not inherit a harness/config default requiring message.send.
+                replyOptions: { sourceReplyDeliveryMode: "automatic" },
               });
             },
             // Required since OpenClaw 2026.8 for inbound adapters. Voice
