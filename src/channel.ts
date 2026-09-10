@@ -1,5 +1,6 @@
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/core";
 import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./defaults.js";
+import { VAUXR_REPLY_ROUTING_GUIDANCE } from "./reply-routing.js";
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
@@ -14,6 +15,9 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
   base: createChannelPluginBase<VauxrAccount>({
     id: "vauxr",
     meta: { label: "Vauxr", selectionLabel: "Vauxr (voice devices)", docsPath: "/channels/vauxr", blurb: "Speak through and control Vauxr voice devices on your LAN." },
+    agentPrompt: {
+      messageToolHints: () => [VAUXR_REPLY_ROUTING_GUIDANCE],
+    },
     capabilities: {
       chatTypes: ["direct"],
     },
