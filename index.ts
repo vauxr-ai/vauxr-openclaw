@@ -4,7 +4,7 @@ import { vauxrPlugin } from "./src/channel.js";
 import { VauxrAPIClient } from "./src/api-client.js";
 import { registerTools } from "./src/tools.js";
 import { VauxrBridge } from "./src/bridge.js";
-import { DEFAULT_VOICE_SYSTEM_PROMPT, VAUXR_ANNOUNCE_GUARDRAIL } from "./src/defaults.js";
+import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./src/defaults.js";
 
 interface VauxrConfig {
   url: string;
@@ -88,12 +88,7 @@ const entry = defineChannelPluginEntry({
     api.on("before_prompt_build", (_event, ctx) => {
       if (ctx.sessionKey && /(?:^|:)vauxr:/.test(ctx.sessionKey)) {
         return {
-          // Keep the announce safeguard even when a deployment provides a
-          // custom voice prompt, which otherwise replaces the default.
-          appendSystemContext: [
-            config.voiceSystemPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT,
-            VAUXR_ANNOUNCE_GUARDRAIL,
-          ].join("\n\n"),
+          appendSystemContext: config.voiceSystemPrompt ?? DEFAULT_VOICE_SYSTEM_PROMPT,
         };
       }
       return undefined;
