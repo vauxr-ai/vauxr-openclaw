@@ -56,18 +56,29 @@ export class VauxrBridge {
   private sentinelBuffer = new Map<string, string>(); // deviceId → held delta text
   private sentinelMode = new Map<string, "passthrough" | "suppressed">();
   private wsUrl: string;
+  private channelRuntime: OpenClawPluginApi["runtime"]["channel"];
+  private gatewayConfig: OpenClawConfig;
 
   constructor(
     private api: OpenClawPluginApi,
     private config: VauxrBridgeConfig,
   ) {
+    this.channelRuntime = api.runtime.channel;
+    this.gatewayConfig = api.config;
     // Derive WS URL from HTTP base URL
     const base = config.url.replace(/\/$/, "");
     this.wsUrl = base.replace(/^http/, "ws") + "/channel";
   }
 
-  start(): void {
+  start(
+    channelRuntime: OpenClawPluginApi["runtime"]["channel"],
+    cfg: OpenClawConfig,
+  ): void {
     if (this.started) return;
+    // Registration-time API bindings can be retired after an in-process
+    // gateway restart. Always use the current account's runtime and config.
+    this.channelRuntime = channelRuntime;
+    this.gatewayConfig = cfg;
     this.started = true;
     this.connect();
     this.subscribeAgentEvents();
@@ -186,7 +197,8 @@ export class VauxrBridge {
   }
 
   private async dispatchTranscript(deviceId: string, text: string): Promise<void> {
-    const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
+    const cfg = this.gatewayConfig;
+    const channelRuntime = this.channelRuntime;
     // Construct the sessionKey in the same form the old subagent.run path
     // ended up producing after openclaw's internal normalization
     // (`agent:<agentId>:vauxr:<deviceId>`). channel.turn.run does NOT apply
@@ -226,7 +238,7 @@ export class VauxrBridge {
       // store paths (SessionStoreAgentIdRequiredError otherwise). Older
       // gateways ignore the extra options argument. Kept inside the try so a
       // future API change degrades to an error frame instead of a crash.
-      const storePath = this.api.runtime.channel.session.resolveStorePath(
+      const storePath = channelRuntime.session.resolveStorePath(
         (cfg as { session?: { store?: string } }).session?.store,
         { agentId },
       );
@@ -237,7 +249,7 @@ export class VauxrBridge {
       // RunChannelTurnParams). Earlier vauxr-openclaw releases that
       // referenced `.turn.run` will throw `Cannot read properties of
       // undefined (reading 'run')` on gateways 2026.5.28+.
-      await this.api.runtime.channel.inbound.run({
+      await channelRuntime.inbound.run({
         channel: "vauxr",
         raw: { deviceId, text },
         adapter: {
@@ -257,7 +269,7 @@ export class VauxrBridge {
             // the rest, so an unsafe cast is acceptable here.
             ctxPayload: ctxPayload as never,
             recordInboundSession:
-              this.api.runtime.channel.session.recordInboundSession,
+              channelRuntime.session.recordInboundSession,
             runDispatch: async () => {
               // Outbound delivery flows through the existing onAgentEvent
               // delta tap (subscribeAgentEvents) for lowest TTS latency — see
@@ -266,10 +278,10 @@ export class VauxrBridge {
               // contract and to give the dispatch-from-config pipeline a sink
               // to write into.
               const { dispatcher } =
-                this.api.runtime.channel.reply.createReplyDispatcherWithTyping({
+                channelRuntime.reply.createReplyDispatcherWithTyping({
                   deliver: async () => undefined,
                 });
-              return await this.api.runtime.channel.reply.dispatchReplyFromConfig({
+              return await channelRuntime.reply.dispatchReplyFromConfig({
                 ctx: ctxPayload as never,
                 cfg,
                 dispatcher,
