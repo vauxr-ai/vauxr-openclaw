@@ -1,7 +1,8 @@
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/core";
 import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./defaults.js";
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type { VauxrBridge } from "./bridge.js";
 
 export interface VauxrAccount {
   accountId?: string | null;
@@ -74,20 +75,30 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
 
 // gateway.startAccount is required for OpenClaw to mark this channel as
 // "running" and "configured" in the UI. The actual bridge lifecycle is
-// managed by registerFull in index.ts (which has access to the full plugin
-// API). This stub holds the channel in running state until the gateway stops.
+// constructed by registerFull in index.ts. Each account start supplies fresh
+// gateway runtime bindings; registration-time bindings may be retired.
 // isConfigured: tells OpenClaw the channel is configured when url is set.
 vauxrPlugin.config.isConfigured = (_account: unknown, cfg: OpenClawConfig) => {
   return Boolean(resolveSection(cfg)?.url);
 };
 
 vauxrPlugin.gateway = {
-  startAccount: async (ctx: { abortSignal: AbortSignal }) => {
+  startAccount: async (ctx) => {
     // If the channel was aborted before startAccount even ran, there's no
     // bridge to start and nothing to clean up — short-circuit.
     if (ctx.abortSignal.aborted) return;
-    const g = globalThis as { __vauxrBridge?: { start(): void; stop(): void } };
-    g.__vauxrBridge?.start();
+    const g = globalThis as { __vauxrBridge?: VauxrBridge };
+    const bridge = g.__vauxrBridge;
+    if (!bridge) throw new Error("Vauxr bridge is not registered");
+    if (!ctx.channelRuntime) throw new Error("Vauxr requires the account channel runtime");
+    // The SDK types this extensible surface with unknown-valued members,
+    // although the gateway supplies the full PluginRuntime.channel object.
+    const channelRuntime = ctx.channelRuntime as unknown as OpenClawPluginApi["runtime"]["channel"];
+    if (!channelRuntime.inbound?.run || !channelRuntime.reply?.dispatchReplyFromConfig ||
+        !channelRuntime.session?.resolveStorePath) {
+      throw new Error("Vauxr account channel runtime is missing dispatch helpers");
+    }
+    bridge.start(channelRuntime, ctx.cfg);
     try {
       await new Promise<void>((resolve) => {
         // Guard against the race where the signal aborts between the
@@ -103,7 +114,7 @@ vauxrPlugin.gateway = {
     } finally {
       // Always stop the bridge on the way out — covers normal abort,
       // already-aborted-after-attach, and any thrown error in between.
-      g.__vauxrBridge?.stop();
+      bridge.stop();
     }
   },
 };
