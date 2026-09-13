@@ -43,14 +43,9 @@ export class VauxrBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeEvents: (() => void) | null = null;
   private started = false;
-  // Inflight turns keyed by deviceId. channel.turn.run doesn't surface an SDK
-  // runId to the caller (unlike the old subagent.run path), so dispatch-time
-  // bookkeeping is keyed by deviceId; we then latch onto the SDK runId on the
-  // first event that arrives carrying a sessionKey (typically lifecycle.start)
-  // and use that runId for all subsequent events from the same run. Most
-  // event streams (assistant/tool/item) do NOT carry sessionKey — only the
-  // lifecycle stream does — so runId-based correlation is load-bearing once
-  // we've latched. One inflight turn per device at a time.
+  // One inflight turn per device. SDK run IDs are registered by the
+  // dispatch-specific onAgentRunStart callback, never inferred from a shared
+  // session key: a retired dispatch can still emit events for that session.
   private activeRuns = new Map<string, ActiveVauxrTurn>(); // deviceId → turn
   private runIdToTurn = new Map<string, ActiveVauxrTurn>(); // sdkRunId → turn
   // Per-device silent-reply sentinel state. "NO_REPLY" often arrives split
@@ -62,7 +57,6 @@ export class VauxrBridge {
   private wsUrl: string;
   private authenticated = false;
   private generation = 0;
-  private retiredDevices = new Set<string>();
   #socketCredential?: string;
 
   constructor(
@@ -108,7 +102,6 @@ export class VauxrBridge {
 
   private retireTurns() {
     this.authenticated = false;
-    for (const id of this.activeRuns.keys()) this.retiredDevices.add(id);
     this.activeRuns.clear(); this.runIdToTurn.clear();
     this.sentinelBuffer.clear(); this.sentinelMode.clear();
   }
@@ -189,7 +182,7 @@ export class VauxrBridge {
     if (!this.authenticated && !["channel.ready", "error"].includes(frame.type)) return;
     switch (frame.type) {
       case "channel.transcript":
-        if (frame.deviceId && frame.text && !this.retiredDevices.has(frame.deviceId) && !this.activeRuns.has(frame.deviceId)) {
+        if (frame.deviceId && frame.text && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
           void this.dispatchTranscript(frame.deviceId, frame.text).catch(
@@ -318,7 +311,14 @@ export class VauxrBridge {
                 dispatcher,
                 // Voice replies are streamed to the originating device above.
                 // Do not inherit a harness/config default requiring message.send.
-                replyOptions: { sourceReplyDeliveryMode: "automatic" },
+                replyOptions: {
+                  sourceReplyDeliveryMode: "automatic",
+                  onAgentRunStart: (runId) => {
+                    if (this.activeRuns.get(deviceId) === activeTurn) {
+                      this.runIdToTurn.set(runId, activeTurn);
+                    }
+                  },
+                },
               });
             },
             // Required since OpenClaw 2026.8 for inbound adapters. Voice
@@ -356,43 +356,24 @@ export class VauxrBridge {
     } finally {
       // channel.turn.run awaits the full turn (including the agent run inside
       // runDispatch), so by this point all events have fired and the turn is
-      // done. Safe to clean up correlation state here. runIdToTurn entries
-      // for this device are cleaned in the lifecycle.end branch of the event
-      // handler — best-effort sweep here in case lifecycle.end never fired.
-      if (this.activeRuns.get(deviceId) !== activeTurn) { this.retiredDevices.delete(deviceId); return; }
+      // done. Only this exact turn may clean up its correlation state; an
+      // unresolved retired dispatch may finish after a replacement starts.
+      if (this.activeRuns.get(deviceId) !== activeTurn) return;
       this.activeRuns.delete(deviceId);
       this.sentinelBuffer.delete(deviceId);
       this.sentinelMode.delete(deviceId);
       for (const [rid, turn] of this.runIdToTurn) {
-        if (turn.deviceId === deviceId) this.runIdToTurn.delete(rid);
+        if (turn === activeTurn) this.runIdToTurn.delete(rid);
       }
     }
   }
 
   private subscribeAgentEvents(): void {
     this.unsubscribeEvents = this.api.runtime.events.onAgentEvent((event) => {
-      // Two-stage correlation:
-      //   1. If the event carries a sessionKey (lifecycle events do, most
-      //      others don't), parse the deviceId and look up the inflight turn
-      //      we registered in dispatchTranscript. Cache the SDK runId so
-      //      subsequent sessionKey-less events from the same run can be
-      //      matched by runId alone.
-      //   2. Otherwise, look up by event.runId — populated by step (1) for
-      //      this turn's prior lifecycle event.
-      // pi-embedded's first lifecycle.start carries sessionKey and arrives
-      // well before any assistant deltas, so the latch is always primed
-      // before delta events need to route.
-      let active: ActiveVauxrTurn | undefined;
-      const sk = event.sessionKey;
-      if (sk) {
-        const m = sk.match(/(?:^|:)vauxr:([^:]+)/);
-        if (m) {
-          active = this.activeRuns.get(m[1]);
-          if (active) this.runIdToTurn.set(event.runId, active);
-        }
-      }
-      if (!active) active = this.runIdToTurn.get(event.runId);
-      if (!active) return;
+      // Only the dispatch that owns this SDK run can register it. Late
+      // starts/events from a retired turn cannot latch onto its replacement.
+      const active = this.runIdToTurn.get(event.runId);
+      if (!active || this.activeRuns.get(active.deviceId) !== active) return;
       const { deviceId, protocolRunId: runId } = active;
 
       if (event.stream === "assistant") {

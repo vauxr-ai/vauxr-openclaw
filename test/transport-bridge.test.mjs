@@ -113,13 +113,15 @@ function certificates(t) {
 const childCode=`
 import {requestJson} from './dist/src/transport.js';
 import {VauxrBridge} from './dist/src/bridge.js';
-let connected=false;const logs=[];
-const api={logger:{debug:m=>logs.push(m),warn:m=>logs.push(m)},runtime:{events:{onAgentEvent(){return ()=>{};}}}};
-const auth={status(){return {state:state.value};},subject(){return 'int_test';},async tick(){},async bearer(){return 'tls-test-authority';},connected(){connected=true;},disconnected(){},async rejected(){}};
+let connected=false,processed=0;const logs=[],warnings=[];
+const api={logger:{debug:m=>logs.push(m),warn:m=>{logs.push(m);warnings.push(m);}},runtime:{events:{onAgentEvent(){return ()=>{};}}}};
+const auth={status(){return {state:connected?'connected':'disconnected'};},subject(){return 'int_test';},async tick(){},async bearer(){return 'tls-test-authority';},connected(){connected=true;},disconnected(){},async rejected(){}};
 let http=false;try{http=(await requestJson(process.env.TEST_ORIGIN,'/api/check',{},'tls-test-authority')).ok===true;}catch(error){logs.push(String(error));}
-const bridge=new VauxrBridge(api,{url:process.env.TEST_ORIGIN,strictTls:true},auth);bridge.start();
-const deadline=Date.now()+1500;while(!connected&&!logs.some(x=>x.includes('connection failed'))&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));
-bridge.stop();console.log(JSON.stringify({http,connected,logs}));
+const bridge=new VauxrBridge(api,{url:process.env.TEST_ORIGIN,strictTls:true},auth);
+bridge.dispatchTranscript=async(deviceId,text)=>{if(deviceId!=='tls-device'||text!=='post-ready')throw new Error('Unexpected transcript');processed++;};
+bridge.start();
+const deadline=Date.now()+1500;while(processed!==1&&!logs.some(x=>x.includes('connection failed'))&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));
+const authenticated=bridge.authenticated;bridge.stop();console.log(JSON.stringify({http,connected,authenticated,processed,logs,warnings}));
 `;
 
 test('actual HTTPS and WSS validate explicit test CA, reject untrusted roots, wrong SAN and expired certificates without downgrade',async t=>{
@@ -129,7 +131,7 @@ test('actual HTTPS and WSS validate explicit test CA, reject untrusted roots, wr
     const server=https.createServer(certs.options(name),(req,res)=>{httpCalls++;res.setHeader('Content-Type','application/json');res.end('{"ok":true}');});
     const origin=await listen(t,server);
     const wss=new WebSocketServer({server});
-    wss.on('connection',ws=>ws.on('message',data=>{if(JSON.parse(String(data)).type==='channel.auth'){authFrames++;ws.send('{"type":"channel.ready","channelId":"int_test"}');}}));
+    wss.on('connection',ws=>ws.on('message',data=>{if(JSON.parse(String(data)).type==='channel.auth'){authFrames++;ws.send('{"type":"channel.ready","channelId":"int_test"}');ws.send('{"type":"channel.transcript","deviceId":"tls-device","text":"post-ready"}');}}));
     t.after(()=>{for(const ws of wss.clients)ws.terminate();wss.close();});
     const env={...process.env,TEST_ORIGIN:origin};
     delete env.NODE_TLS_REJECT_UNAUTHORIZED;delete env.NODE_EXTRA_CA_CERTS;
@@ -138,6 +140,10 @@ test('actual HTTPS and WSS validate explicit test CA, reject untrusted roots, wr
     const actual=JSON.parse(result.stdout);
     assert.equal(actual.http,expected,`${name} HTTPS with trust=${trust}`);
     assert.equal(actual.connected,expected,`${name} WSS with trust=${trust}`);
+    assert.equal(actual.authenticated,expected,`${name} authenticated WSS with trust=${trust}`);
+    assert.equal(actual.processed,expected?1:0,`${name} post-ready transcript with trust=${trust}`);
+    assert.deepEqual(actual.warnings.filter(message=>message!=='[vauxr-bridge] WebSocket connection failed'),[]);
+    if(expected)assert.deepEqual(actual.warnings,[]);
     assert.equal(httpCalls,expected?1:0);assert.equal(authFrames,expected?1:0);
     assert.ok(!JSON.stringify(actual).includes('tls-test-authority'));
   }
@@ -180,3 +186,78 @@ test('ready for another channel cannot mark the integration connected',async t=>
   await until(()=>!h.bridge.started);
   assert.equal(h.counts().connected,0);assert.equal(h.state.value,'disconnected');
 });
+
+for (const replacement of ['stop/start', 'socket close']) {
+  test(`unresolved old dispatch permits a new turn after ${replacement} and stays isolated`, async t => {
+    const sockets = [], responses = [], pending = [];
+    let emit;
+    const origin = await wsFixture(t, ws => {
+      sockets.push(ws);
+      ws.on('message', data => {
+        const frame = JSON.parse(String(data));
+        if (frame.type === 'channel.auth') ws.send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));
+        else responses.push(frame);
+      });
+    });
+    const h = harness(origin);
+    t.after(() => h.bridge.stop());
+    h.bridge.api.runtime.events.onAgentEvent = callback => {emit = callback; return () => {};};
+    h.bridge.api.runtime.channel = {
+      session: {resolveStorePath(){return '/unused';},recordInboundSession(){}},
+      inbound: {run({adapter}) {
+        const turn = adapter.resolveTurn();
+        const promise = turn.runDispatch();
+        pending.at(-1).skip = turn.runDispatchLifecycle.onDispatchSkipped;
+        return promise;
+      }},
+      reply: {
+        createReplyDispatcherWithTyping(){return {dispatcher:{}};},
+        dispatchReplyFromConfig({replyOptions,ctx}) {
+          return new Promise((resolve,reject) => pending.push({resolve,reject,start:replyOptions.onAgentRunStart,sessionKey:ctx.SessionKey}));
+        },
+      },
+    };
+    const transcript = () => sockets.at(-1).send(JSON.stringify({type:'channel.transcript',deviceId:'dev-test',text:'Speak'}));
+    const event = (runId,stream,data) => emit({runId,sessionKey:runId === 'new-run' && stream === 'assistant' ? undefined : pending[0].sessionKey,stream,data});
+    h.bridge.start();
+    await until(() => h.bridge.authenticated);
+    transcript();
+    await until(() => pending.length === 1);
+    pending[0].start('old-run');
+    if (replacement === 'stop/start') {h.bridge.stop();h.bridge.start();}
+    else sockets[0].close();
+    await until(() => sockets.length === 2 && h.bridge.authenticated);
+    transcript();
+    await until(() => pending.length === 2); // Old promise is still unresolved.
+    assert.equal(pending[0].sessionKey,pending[1].sessionKey);
+    const active = h.bridge.activeRuns.get('dev-test');
+    pending[1].start('new-run');
+    event('new-run','assistant',{delta:'NO'}); // Preserve replacement sentinel state too.
+    pending[0].start('late-old-run');
+    for (const runId of ['old-run','late-old-run']) {
+      event(runId,'lifecycle',{phase:'start'});
+      event(runId,'assistant',{delta:'stale'});
+      event(runId,'error',{});
+      event(runId,'lifecycle',{phase:'end'});
+    }
+    pending[0].skip('old skip');
+    if (replacement === 'stop/start') pending[0].reject(new Error('old failure'));
+    else pending[0].resolve({});
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.bridge.activeRuns.get('dev-test'),active);
+    assert.equal(h.bridge.sentinelBuffer.get('dev-test'),'NO');
+    assert.equal(h.bridge.runIdToTurn.get('new-run'),active);
+    event('old-run','assistant',{delta:'after completion'});
+    event('new-run','assistant',{delta:'w speaking'});
+    event('new-run','lifecycle',{phase:'end'});
+    await until(() => responses.some(frame => frame.type === 'channel.response.end'));
+    assert.deepEqual(responses,[
+      {type:'channel.response.delta',deviceId:'dev-test',runId:active.protocolRunId,text:'NOw speaking'},
+      {type:'channel.response.end',deviceId:'dev-test',runId:active.protocolRunId},
+    ]);
+    pending[1].resolve({});
+    await until(() => h.bridge.activeRuns.size === 0);
+    assert.equal(h.bridge.runIdToTurn.size,0);
+    assert.ok(!h.logs.some(line => line.includes('Invalid inbound frame')));
+  });
+}
