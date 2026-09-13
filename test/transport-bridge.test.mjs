@@ -110,43 +110,157 @@ function certificates(t) {
   }
   return {dir, options:name=>({key:readFileSync(join(dir,`${name}.key`)),cert:readFileSync(join(dir,`${name}.pem`))})};
 }
+// Runtime boundary only: the bridge's transcript adapter, event correlation and
+// response sender remain production code. No live gateway/model is needed.
 const childCode=`
+import assert from 'node:assert/strict';
 import {requestJson} from './dist/src/transport.js';
 import {VauxrBridge} from './dist/src/bridge.js';
-let connected=false,processed=0;const logs=[],warnings=[];
-const api={logger:{debug:m=>logs.push(m),warn:m=>{logs.push(m);warnings.push(m);}},runtime:{events:{onAgentEvent(){return ()=>{};}}}};
-const auth={status(){return {state:connected?'connected':'disconnected'};},subject(){return 'int_test';},async tick(){},async bearer(){return 'tls-test-authority';},connected(){connected=true;},disconnected(){},async rejected(){}};
-let http=false;try{http=(await requestJson(process.env.TEST_ORIGIN,'/api/check',{},'tls-test-authority')).ok===true;}catch(error){logs.push(String(error));}
+let connected=false,processed=0,emit;const logs=[],warnings=[];
+const api={config:{channels:{vauxr:{targetAgent:'tls-agent'}}},
+  logger:Object.fromEntries(['debug','info','warn','error'].map(level=>[level,m=>{logs.push(m);if(level==='warn'||level==='error')warnings.push(m);} ])),
+  runtime:{events:{onAgentEvent(callback){emit=callback;return ()=>{};}},channel:{
+    session:{resolveStorePath(){return '/unused';},recordInboundSession(){}},
+    inbound:{async run({channel,raw,adapter}){
+      assert.equal(channel,'vauxr');
+      assert.deepEqual(raw,{deviceId:'tls-device',text:'post-ready'});
+      assert.equal(adapter.ingest().rawText,'post-ready');
+      assert.equal(adapter.classify().canStartAgentTurn,true);
+      const turn=adapter.resolveTurn();
+      assert.equal(turn.routeSessionKey,'agent:tls-agent:vauxr:tls-device');
+      await turn.runDispatch();processed++;
+    }},
+    reply:{createReplyDispatcherWithTyping(){return {dispatcher:{}};},
+      async dispatchReplyFromConfig({ctx,replyOptions}){
+        assert.equal(ctx.Body,'post-ready');assert.equal(ctx.From,'tls-device');
+        assert.equal(replyOptions.sourceReplyDeliveryMode,'automatic');
+        const runId='tls-sdk-run';replyOptions.onAgentRunStart(runId);
+        emit({runId,stream:'assistant',data:{delta:'TLS response'}});
+        emit({runId,stream:'lifecycle',data:{phase:'end'}});
+      }},
+  }}};
+const auth={status(){return {state:connected?'connected':'disconnected'};},subject(){return process.env.TEST_SUBJECT;},async tick(){},async bearer(){return process.env.TEST_TOKEN;},connected(){connected=true;},disconnected(){},async rejected(){}};
+let http=false;try{http=(await requestJson(process.env.TEST_ORIGIN,'/api/check',{},process.env.TEST_TOKEN)).ok===true;}catch(error){logs.push(String(error));}
 const bridge=new VauxrBridge(api,{url:process.env.TEST_ORIGIN,strictTls:true},auth);
-bridge.dispatchTranscript=async(deviceId,text)=>{if(deviceId!=='tls-device'||text!=='post-ready')throw new Error('Unexpected transcript');processed++;};
 bridge.start();
-const deadline=Date.now()+1500;while(processed!==1&&!logs.some(x=>x.includes('connection failed'))&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));
+const deadline=Date.now()+3000;
+while(processed!==1&&bridge.started&&!logs.some(x=>x.includes('connection failed'))&&Date.now()<deadline)await new Promise(r=>setTimeout(r,5));
+assert.ok(processed===1||!bridge.started||logs.some(x=>x.includes('connection failed')),'TLS child reached a terminal outcome');
 const authenticated=bridge.authenticated;bridge.stop();console.log(JSON.stringify({http,connected,authenticated,processed,logs,warnings}));
 `;
 
-test('actual HTTPS and WSS validate explicit test CA, reject untrusted roots, wrong SAN and expired certificates without downgrade',async t=>{
+// Equivalent to the exercised contract in server 16968a73b7610c917a9922d94d8c7ef187f7dda3:
+// channel_server.py _handle_auth authenticates the bearer, requires CHANNEL_CONNECT,
+// looks up the principal's registered channel, and derives ready.channelId from it.
+// _handle_authenticated_message requires VOICE_RESPONSE, the active channel and
+// listener origin, and string deviceId/runId. Lifecycle/revocation is covered by
+// the separate pinned real-server suite, not simulated by this static fixture.
+function validatingChannelFixture(t, server) {
+  const credentials=new Map([
+    ['tls-test-authority',{role:'integration',subject:'int_test'}],
+    ['tls-other-authority',{role:'integration',subject:'int_other'}],
+    ['tls-unregistered-authority',{role:'integration',subject:'int_unregistered'}],
+    ['tls-owner-authority',{role:'owner',subject:'int_test'}],
+  ]);
+  const channels=new Set(['int_test','int_other']);
+  const state={authFrames:0,missingToken:false,ready:[],denials:[],responses:[],warnings:[],closed:0};
+  const authenticate=token=>credentials.get(token);
+  const allowed=(principal,operation)=>principal?.role==='integration'&&['channel.connect','voice.respond'].includes(operation);
+  const wss=new WebSocketServer({server,path:'/channel'});
+  wss.on('connection',ws=>{
+    let principal,channel;
+    const deny=code=>{state.denials.push(code);ws.send(JSON.stringify({type:'error',code,message:'Access denied'}));ws.close();};
+    ws.on('close',()=>state.closed++);
+    ws.on('error',()=>state.warnings.push('Unexpected fixture socket error'));
+    ws.on('message',data=>{
+      try {
+        const frame=JSON.parse(String(data));
+        if(!principal){
+          assert.equal(frame.type,'channel.auth');state.authFrames++;
+          state.missingToken=!Object.hasOwn(frame,'token');
+          const candidate=authenticate(frame.token);
+          if(!candidate){deny('UNAUTHORIZED');return;}
+          if(!allowed(candidate,'channel.connect')||!channels.has(candidate.subject)){deny('FORBIDDEN');return;}
+          principal=candidate;channel=principal.subject;state.ready.push(channel);
+          ws.send(JSON.stringify({type:'channel.ready',channelId:channel}));
+          // Deliberately queued even for a client with a mismatched local subject:
+          // the bridge must reject ready and must not dispatch the following frame.
+          ws.send(JSON.stringify({type:'channel.transcript',deviceId:'tls-device',text:'post-ready'}));
+          return;
+        }
+        if(!allowed(principal,'voice.respond')||principal.subject!==channel||channel!=='int_test'){
+          deny('FORBIDDEN');return;
+        }
+        assert.ok(['channel.response.delta','channel.response.end'].includes(frame.type),'Unexpected response frame');
+        assert.equal(frame.deviceId,'tls-device'); // listener belongs to int_test
+        assert.equal(typeof frame.runId,'string');assert.ok(frame.runId.length>0);
+        state.responses.push(frame);
+      } catch {
+        // Never echo incoming frames, credentials, or assertion payloads.
+        state.warnings.push('Unexpected fixture frame/handler failure');ws.close();
+      }
+    });
+  });
+  t.after(()=>{for(const ws of wss.clients)ws.terminate();wss.close();});
+  return {state,authenticate};
+}
+
+test('actual HTTPS and WSS validate TLS, channel authentication and production response dispatch',async t=>{
   const certs=certificates(t);
-  for(const [name,trust,expected] of [['trusted',true,true],['trusted',false,false],['wrong-san',true,false],['expired',true,false]]) {
-    let httpCalls=0,authFrames=0;
-    const server=https.createServer(certs.options(name),(req,res)=>{httpCalls++;res.setHeader('Content-Type','application/json');res.end('{"ok":true}');});
+  const cases=[
+    {label:'trusted TLS correlated response'},
+    {label:'untrusted root',trust:false,tls:false},
+    {label:'wrong SAN',certificate:'wrong-san',tls:false},
+    {label:'expired certificate',certificate:'expired',tls:false},
+    {label:'wrong token',token:'tls-invalid-authority',denial:'UNAUTHORIZED'},
+    {label:'missing token',token:undefined,denial:'UNAUTHORIZED'},
+    {label:'token without CHANNEL_CONNECT',token:'tls-owner-authority',denial:'FORBIDDEN'},
+    {label:'unregistered channel identity',token:'tls-unregistered-authority',denial:'FORBIDDEN'},
+    {label:'authenticated channel differs from local identity',token:'tls-other-authority',identityMismatch:true},
+  ];
+  for(const scenario of cases) await t.test(scenario.label,async t=>{
+    const {certificate='trusted',trust=true,tls=true,denial,identityMismatch=false}=scenario;
+    const token=Object.hasOwn(scenario,'token')?scenario.token:'tls-test-authority';
+    const expected=tls&&!denial&&!identityMismatch;
+    let httpCalls=0;
+    const server=https.createServer(certs.options(certificate),(req,res)=>{
+      httpCalls++;
+      const header=req.headers.authorization;
+      const principal=fixture.authenticate(header?.startsWith('Bearer ')?header.slice(7):undefined);
+      res.writeHead(principal?200:401,{'Content-Type':'application/json'});
+      res.end(JSON.stringify(principal?{ok:true}:{error:'unauthorized'}));
+    });
+    const fixture=validatingChannelFixture(t,server);
     const origin=await listen(t,server);
-    const wss=new WebSocketServer({server});
-    wss.on('connection',ws=>ws.on('message',data=>{if(JSON.parse(String(data)).type==='channel.auth'){authFrames++;ws.send('{"type":"channel.ready","channelId":"int_test"}');ws.send('{"type":"channel.transcript","deviceId":"tls-device","text":"post-ready"}');}}));
-    t.after(()=>{for(const ws of wss.clients)ws.terminate();wss.close();});
-    const env={...process.env,TEST_ORIGIN:origin};
-    delete env.NODE_TLS_REJECT_UNAUTHORIZED;delete env.NODE_EXTRA_CA_CERTS;
+    const env={...process.env,TEST_ORIGIN:origin,TEST_SUBJECT:'int_test'};
+    delete env.NODE_TLS_REJECT_UNAUTHORIZED;delete env.NODE_EXTRA_CA_CERTS;delete env.TEST_TOKEN;
+    if(token!==undefined)env.TEST_TOKEN=token;
     if(trust)env.NODE_EXTRA_CA_CERTS=join(certs.dir,'ca.pem');
     const result=await run(process.execPath,['--input-type=module','-e',childCode],{cwd:process.cwd(),env,timeout:8000});
+    assert.equal(result.stderr,'','Unexpected child warning/error');
     const actual=JSON.parse(result.stdout);
-    assert.equal(actual.http,expected,`${name} HTTPS with trust=${trust}`);
-    assert.equal(actual.connected,expected,`${name} WSS with trust=${trust}`);
-    assert.equal(actual.authenticated,expected,`${name} authenticated WSS with trust=${trust}`);
-    assert.equal(actual.processed,expected?1:0,`${name} post-ready transcript with trust=${trust}`);
-    assert.deepEqual(actual.warnings.filter(message=>message!=='[vauxr-bridge] WebSocket connection failed'),[]);
-    if(expected)assert.deepEqual(actual.warnings,[]);
-    assert.equal(httpCalls,expected?1:0);assert.equal(authFrames,expected?1:0);
-    assert.ok(!JSON.stringify(actual).includes('tls-test-authority'));
-  }
+    const state=fixture.state;
+    if(tls)await until(()=>state.closed===1);
+    assert.equal(actual.http,tls&&Boolean(fixture.authenticate(token)));
+    assert.equal(actual.connected,expected);
+    assert.equal(actual.authenticated,expected);
+    assert.equal(actual.processed,expected?1:0);
+    assert.deepEqual(actual.warnings,!tls?['[vauxr-bridge] WebSocket connection failed']:denial?['[vauxr-bridge] Server rejected channel operation']:[]);
+    assert.deepEqual(state.warnings,[]);
+    assert.equal(httpCalls,tls?1:0);assert.equal(state.authFrames,tls?1:0);
+    assert.equal(state.missingToken,tls&&token===undefined);
+    assert.deepEqual(state.denials,denial?[denial]:[]);
+    assert.deepEqual(state.ready,!tls||denial?[]:[identityMismatch?'int_other':'int_test']);
+    if(expected){
+      assert.equal(state.responses.length,2);
+      const [delta,end]=state.responses;
+      assert.match(delta.runId,/^[0-9a-f-]{36}$/);
+      assert.notEqual(delta.runId,'tls-sdk-run');
+      assert.deepEqual(delta,{type:'channel.response.delta',deviceId:'tls-device',runId:delta.runId,text:'TLS response'});
+      assert.deepEqual(end,{type:'channel.response.end',deviceId:'tls-device',runId:delta.runId});
+    }else assert.deepEqual(state.responses,[]);
+    assert.ok(!JSON.stringify(actual).includes('authority'),'Credential must not appear in logs');
+  });
 });
 
 test('origin binding rejects mixed schemes, hosts, URL credentials and strict LAN downgrade',()=>{
