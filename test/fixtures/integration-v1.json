@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "endpoint": "/api/integrations/v1/{action}",
+  "public_fields": ["version", "request_id", "server_id", "origin", "channel_id", "display_name", "expires_at", "state"],
+  "request_only_fields": ["user_code"],
+  "delivery_only_fields": ["credential", "credential_id", "save_required"],
+  "requests": {
+    "request": ["request_id", "request_secret", "origin", "display_name", "expires_at"],
+    "status": ["request_id", "request_secret"],
+    "deliver": ["request_id", "request_secret"],
+    "cancel": ["request_id", "request_secret"],
+    "ack": ["request_id", "request_secret", "credential", "saved"],
+    "list": [],
+    "approve": ["request_id", "user_code"],
+    "deny": ["request_id"]
+  },
+  "states": ["pending", "approved", "delivered", "completed", "denied", "cancelled", "failed", "expired", "stale", "revoked"],
+  "max_lifetime_seconds": 300,
+  "recommended_poll_interval_seconds": 15,
+  "client_ack_obligations": ["atomic protected secret save", "commit and read back", "ACK only after durable save", "no scopes before ACK", "retry ACK after lost response"],
+  "transport_policy": {"default": "http/ws", "strict_optional": "https/wss", "certificate_validation": true, "silent_downgrade": false}
+}

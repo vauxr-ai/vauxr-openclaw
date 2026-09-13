@@ -36,7 +36,9 @@ test('every Vauxr transcript requests automatic delivery without changing shared
     assert.deepEqual(errors, []);
     assert.equal(dispatched.length, 4);
     for (const args of dispatched) {
-      assert.deepEqual(args.replyOptions, { sourceReplyDeliveryMode: 'automatic' });
+      const { onAgentRunStart, ...deliveryOptions } = args.replyOptions;
+      assert.equal(typeof onAgentRunStart, 'function');
+      assert.deepEqual(deliveryOptions, { sourceReplyDeliveryMode: 'automatic' });
       assert.equal(args.ctx.Provider, 'vauxr');
       assert.equal(args.cfg, cfg);
     }
