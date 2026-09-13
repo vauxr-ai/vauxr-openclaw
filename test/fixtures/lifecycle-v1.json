@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "transport": "POST HTTP or HTTPS /api/lifecycle/v1/{action}",
+  "public_fields": [
+    "version",
+    "operation_id",
+    "role",
+    "subject",
+    "action",
+    "state",
+    "expires_at",
+    "overlap_until",
+    "credential_id"
+  ],
+  "delivery_extra_fields": [
+    "credential",
+    "save_required"
+  ],
+  "recovery_redemption_extra_fields": [
+    "operation_id",
+    "save_required"
+  ],
+  "operation_id": "11111111111111111111111111111111",
+  "queue_seconds": 86400,
+  "overlap_seconds": 300,
+  "sequence": [
+    "queued",
+    "pending",
+    "delivered",
+    "acknowledged",
+    "completed"
+  ],
+  "ack": {
+    "operation_id": "11111111111111111111111111111111",
+    "saved": true
+  },
+  "ack_authentication": "replacement bearer after durable save",
+  "lost_delivery": "never redisclose; explicit owner recovery/re-pair",
+  "lost_ack": "retry same ACK with durably saved replacement",
+  "new_ws_frames": [],
+  "history": {
+    "general_limit": 1024,
+    "total_limit": 3072,
+    "retention": "permanent",
+    "capacity_revoke": "reserved for unblocked verifiers or unfinished operations",
+    "capacity_noop_revoke": "new ID: capacity; original ID: retained result",
+    "tombstone_limit": 65536,
+    "admission": "reserve tombstones and operation headroom for all liabilities"
+  },
+  "teardown": {
+    "attempt_seconds": 2,
+    "failure_status": 503,
+    "failure_error": "transport_teardown_unavailable",
+    "retry": "retain failed attempts; observe noncooperative attempts without duplicates"
+  },
+  "transport_policy": {
+    "default": "http/ws",
+    "optional": "https/wss",
+    "origin_setting": "OWNER_HTTP_ORIGIN",
+    "https_origin_setting": "OWNER_HTTPS_ORIGIN",
+    "https_certificate_requirements": [
+      "trusted_chain",
+      "hostname_or_ip_san",
+      "validity",
+      "trusted_time"
+    ],
+    "tls_failure_fallback": false
+  }
+}

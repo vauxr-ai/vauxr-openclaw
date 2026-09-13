@@ -1,4 +1,6 @@
 import WebSocket from "ws";
+import { endpoints } from "./transport.js";
+import type { VauxrAuth } from "./auth.js";
 import type { OpenClawPluginApi, OpenClawConfig } from "openclaw/plugin-sdk/core";
 
 /** Vauxr protocol frames sent by vauxr to the channel plugin */
@@ -10,6 +12,7 @@ interface VauxrInboundFrame {
   name?: string;
   code?: string;
   message?: string;
+  channelId?: string;
 }
 
 /** Vauxr protocol frames sent by the channel plugin to vauxr */
@@ -21,7 +24,8 @@ type VauxrOutboundFrame =
 
 interface VauxrBridgeConfig {
   url: string;
-  token?: string;
+  httpUrl?: string;
+  strictTls?: boolean;
   voiceSystemPrompt?: string;
 }
 
@@ -56,26 +60,33 @@ export class VauxrBridge {
   private sentinelBuffer = new Map<string, string>(); // deviceId → held delta text
   private sentinelMode = new Map<string, "passthrough" | "suppressed">();
   private wsUrl: string;
+  private authenticated = false;
+  private generation = 0;
+  private retiredDevices = new Set<string>();
+  #socketCredential?: string;
 
   constructor(
     private api: OpenClawPluginApi,
     private config: VauxrBridgeConfig,
+    private auth?: VauxrAuth,
   ) {
     // Derive WS URL from HTTP base URL
-    const base = config.url.replace(/\/$/, "");
-    this.wsUrl = base.replace(/^http/, "ws") + "/channel";
+    this.wsUrl = endpoints(config).wsUrl;
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.connect();
+    void this.connect();
     this.subscribeAgentEvents();
   }
 
   stop(): void {
+    this.generation++;
     if (!this.started) return;
     this.started = false;
+    this.retireTurns();
+    this.auth?.disconnected();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -95,28 +106,49 @@ export class VauxrBridge {
     this.reconnectMs = INITIAL_RECONNECT_MS;
   }
 
-  private connect(): void {
-    this.api.logger.debug?.(`[vauxr-bridge] Connecting to vauxr: ${this.wsUrl}`);
+  private retireTurns() {
+    this.authenticated = false;
+    for (const id of this.activeRuns.keys()) this.retiredDevices.add(id);
+    this.activeRuns.clear(); this.runIdToTurn.clear();
+    this.sentinelBuffer.clear(); this.sentinelMode.clear();
+  }
 
-    const ws = new WebSocket(this.wsUrl);
+  async refresh(): Promise<void> {
+    const generation = this.generation;
+    let next: string;
+    try { next = await this.auth!.bearer(); }
+    catch { this.stop(); return; }
+    if (generation !== this.generation) return;
+    if (this.started && next !== this.#socketCredential) this.stop();
+    this.start();
+    if (this.authenticated) this.auth?.connected();
+  }
+
+  private async connect(): Promise<void> {
+    const generation = this.generation;
+    let token: string;
+    try { token = await this.auth!.bearer(); }
+    catch { this.stop(); return; }
+    if (!this.started || generation !== this.generation) return;
+    this.#socketCredential = token;
+    const ws = new WebSocket(this.wsUrl, { rejectUnauthorized: true, followRedirects: false, maxPayload: 1_048_576 });
     this.ws = ws;
 
     ws.on("open", () => {
       this.api.logger.debug?.("[vauxr-bridge] Connected to vauxr");
       this.reconnectMs = INITIAL_RECONNECT_MS;
 
-      // Authenticate with channel token
-      if (this.config.token) {
-        this.send({ type: "channel.auth", token: this.config.token });
-      }
+      if (this.ws !== ws || !this.started) return;
+      ws.send(JSON.stringify({ type: "channel.auth", token }));
     });
 
     ws.on("message", (data) => {
+      if (this.ws !== ws || !this.started) return;
       try {
         const frame = JSON.parse(String(data)) as VauxrInboundFrame;
         this.handleFrame(frame);
       } catch (err) {
-        this.api.logger.warn(`[vauxr-bridge] Failed to parse inbound frame: ${String(err)}`);
+        this.api.logger.warn("[vauxr-bridge] Invalid inbound frame");
       }
     });
 
@@ -129,11 +161,13 @@ export class VauxrBridge {
       // bridge's current ws.
       if (this.ws !== ws) return;
       this.ws = null;
+      this.retireTurns();
+      this.auth?.disconnected();
       if (this.started) this.scheduleReconnect();
     });
 
     ws.on("error", (err) => {
-      this.api.logger.warn(`[vauxr-bridge] WS error: ${String(err)}`);
+      this.api.logger.warn("[vauxr-bridge] WebSocket connection failed");
       // 'close' event will fire after this — reconnect handled there
     });
   }
@@ -145,42 +179,50 @@ export class VauxrBridge {
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
+      void this.connect();
     }, this.reconnectMs);
     this.reconnectMs = Math.min(this.reconnectMs * 2, MAX_RECONNECT_MS);
   }
 
   private handleFrame(frame: VauxrInboundFrame): void {
+    if (!frame || typeof frame !== "object") return;
+    if (!this.authenticated && !["channel.ready", "error"].includes(frame.type)) return;
     switch (frame.type) {
       case "channel.transcript":
-        if (frame.deviceId && frame.text) {
+        if (frame.deviceId && frame.text && !this.retiredDevices.has(frame.deviceId) && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
           void this.dispatchTranscript(frame.deviceId, frame.text).catch(
             (err) => {
               this.api.logger.warn(
-                `[vauxr-bridge] Unhandled transcript dispatch error for ${frame.deviceId}: ${String(err)}`,
+                "[vauxr-bridge] Transcript dispatch failed",
               );
             },
           );
         }
         break;
       case "channel.device_state":
-        this.api.logger.info(
-          `[vauxr-bridge] Device ${frame.deviceId ?? "unknown"}: ${frame.state ?? "unknown"}`,
-        );
+        // Device metadata is untrusted; do not mirror payloads into logs.
         break;
       case "channel.ready":
+        if (frame.channelId !== this.auth?.subject()) { this.stop(); return; }
+        this.auth?.connected();
+        if (this.auth?.status().state !== 'connected') { this.stop(); return; }
+        this.authenticated = true;
         this.api.logger.debug?.("[vauxr-bridge] Channel authenticated");
         break;
       case "error":
-        this.api.logger.warn(
-          `[vauxr-bridge] Error from vauxr: ${frame.code ?? "UNKNOWN"} — ${frame.message ?? "no details"}`,
-        );
+        this.api.logger.warn("[vauxr-bridge] Server rejected channel operation");
+        if (frame.code === "UNAUTHORIZED") {
+          this.stop();
+          // The old socket may be retired by a just-committed rotation ACK.
+          // Reconcile with the saved bearer before deciding this is revocation.
+          void this.auth?.tick().catch(() => undefined);
+        } else if (frame.code === "FORBIDDEN") this.stop();
         break;
       default:
         this.api.logger.warn(
-          `[vauxr-bridge] Unknown frame type: ${String((frame as unknown as Record<string, unknown>).type)}`,
+          "[vauxr-bridge] Unknown frame type",
         );
     }
   }
@@ -200,12 +242,13 @@ export class VauxrBridge {
     const protocolRunId = crypto.randomUUID();
     const turnId = `vauxr-${deviceId}-${Date.now()}`;
     this.api.logger.info(
-      `[vauxr-bridge] Dispatching transcript for ${sessionKey} (runId=${protocolRunId}): "${text}"`,
+      "[vauxr-bridge] Dispatching voice turn",
     );
 
     // Register before dispatch so onAgentEvent can correlate any event the
     // agent runtime emits for this turn back to the originating device.
-    this.activeRuns.set(deviceId, { deviceId, protocolRunId });
+    const activeTurn = { deviceId, protocolRunId };
+    this.activeRuns.set(deviceId, activeTurn);
 
     // Minimal inbound context. Voice channels don't carry replies, media,
     // mentions, forwards, etc. — most MsgContext fields stay undefined.
@@ -287,13 +330,13 @@ export class VauxrBridge {
               turnAdoptionLifecycle: undefined,
               onDispatchSkipped: (reason: unknown) => {
                 this.api.logger.warn(
-                  `[vauxr-bridge] Dispatch skipped for ${sessionKey}: ${JSON.stringify(reason)}`,
+                  "[vauxr-bridge] Dispatch skipped",
                 );
                 this.send({
                   type: "channel.response.error",
                   deviceId,
                   runId: protocolRunId,
-                  message: `dispatch skipped: ${JSON.stringify(reason)}`,
+                  message: "Dispatch skipped",
                 });
               },
             },
@@ -302,13 +345,13 @@ export class VauxrBridge {
       });
     } catch (err) {
       this.api.logger.warn(
-        `[vauxr-bridge] Failed to dispatch transcript for ${sessionKey}: ${String(err)}`,
+        "[vauxr-bridge] Transcript dispatch failed",
       );
       this.send({
         type: "channel.response.error",
         deviceId,
         runId: protocolRunId,
-        message: String(err),
+        message: "Transcript dispatch failed",
       });
     } finally {
       // channel.turn.run awaits the full turn (including the agent run inside
@@ -316,6 +359,7 @@ export class VauxrBridge {
       // done. Safe to clean up correlation state here. runIdToTurn entries
       // for this device are cleaned in the lifecycle.end branch of the event
       // handler — best-effort sweep here in case lifecycle.end never fired.
+      if (this.activeRuns.get(deviceId) !== activeTurn) { this.retiredDevices.delete(deviceId); return; }
       this.activeRuns.delete(deviceId);
       this.sentinelBuffer.delete(deviceId);
       this.sentinelMode.delete(deviceId);
@@ -405,20 +449,21 @@ export class VauxrBridge {
 
       if (event.stream === "error") {
         this.api.logger.warn(
-          `[vauxr-bridge] Agent error for device ${deviceId}: ${JSON.stringify(event.data)}`,
+          "[vauxr-bridge] Agent error",
         );
         this.send({
           type: "channel.response.error",
           deviceId,
           runId,
-          message: String(event.data["message"] ?? "Agent error"),
+          message: "Agent error",
         });
       }
     });
   }
 
   private send(frame: VauxrOutboundFrame): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if ("runId" in frame && this.activeRuns.get(frame.deviceId)?.protocolRunId !== frame.runId) return;
+    if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
     }
   }

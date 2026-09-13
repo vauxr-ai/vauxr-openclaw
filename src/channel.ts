@@ -23,23 +23,22 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
         const section = resolveSection(cfg);
         const url = section?.url;
         return {
-          accountId: url ?? "default",
-          // running/connected drive UI status indicators
-          ...(url ? { running: true, connected: true } : {}),
+          accountId: "default",
+          // Runtime status is supplied only after enrollment and socket authentication.
         };
       },
       // Single-account channel — listAccountIds returns either the single
       // resolved id or an empty array if the channel isn't configured.
       listAccountIds: (cfg) => {
         const section = resolveSection(cfg);
-        return section?.url ? [section.url] : [];
+        return section?.url ? ["default"] : [];
       },
-      defaultAccountId: (cfg) => resolveSection(cfg)?.url ?? "default",
+      defaultAccountId: () => "default",
     }),
     setup: {
       resolveAccountId({ cfg }) {
         const section = resolveSection(cfg);
-        return section?.url ?? "default";
+        return "default";
       },
       applyAccountConfig({ cfg, input }) {
         const updated = structuredClone(cfg) as Record<string, unknown>;
@@ -49,8 +48,10 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
           // Existing value (if any) takes precedence via spread order.
           voiceSystemPrompt: DEFAULT_VOICE_SYSTEM_PROMPT,
           ...((channels.vauxr ?? {}) as Record<string, unknown>),
-          ...(input as Record<string, unknown>),
+          ...Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([key]) =>
+            ['url', 'httpUrl', 'strictTls', 'voiceSystemPrompt', 'otaPublicBase', 'alsoAllow', 'targetAgent'].includes(key))),
         } as Record<string, unknown>;
+        delete merged.token; // Remove obsolete shared credentials, preserving unrelated settings.
         channels.vauxr = merged;
         updated.channels = channels;
         applyToolsBySenderPolicy(updated, merged);
@@ -58,7 +59,7 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
       },
     },
   }) as Parameters<typeof createChatChannelPlugin<VauxrAccount>>[0]["base"],
-  // No security/pairing — vauxr devices are trusted local hardware
+  // Only scoped, enrolled channel authority can deliver physical-device voice turns.
   outbound: {
     // Outbound responses are delivered via the WS bridge, not the outbound adapter
     // This stub satisfies the ChannelPlugin interface
@@ -72,45 +73,35 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
   },
 });
 
-// gateway.startAccount is required for OpenClaw to mark this channel as
-// "running" and "configured" in the UI. The actual bridge lifecycle is
-// managed by registerFull in index.ts (which has access to the full plugin
-// API). This stub holds the channel in running state until the gateway stops.
-// isConfigured: tells OpenClaw the channel is configured when url is set.
-vauxrPlugin.config.isConfigured = (_account: unknown, cfg: OpenClawConfig) => {
-  return Boolean(resolveSection(cfg)?.url);
-};
-
+// Configuration presence and authenticated connectivity are distinct.
+vauxrPlugin.config.isConfigured = (_account: unknown, cfg: OpenClawConfig) => Boolean(resolveSection(cfg)?.url);
 vauxrPlugin.gateway = {
-  startAccount: async (ctx: { abortSignal: AbortSignal }) => {
-    // If the channel was aborted before startAccount even ran, there's no
-    // bridge to start and nothing to clean up — short-circuit.
+  startAccount: async (ctx) => {
     if (ctx.abortSignal.aborted) return;
-    const g = globalThis as { __vauxrBridge?: { start(): void; stop(): void } };
-    g.__vauxrBridge?.start();
+    const runtime = (globalThis as { __vauxrRuntime?: import("./runtime.js").VauxrRuntime }).__vauxrRuntime;
+    if (!runtime) { ctx.setStatus({ accountId: ctx.accountId, running: false, connected: false, lastError: "Vauxr runtime unavailable" }); return; }
+    const update = () => {
+      const status = runtime.auth.status();
+      ctx.setStatus({ accountId: ctx.accountId, running: true, connected: status.state === 'connected',
+        lastError: status.state === 'connected' ? null : `Vauxr: ${status.state}` });
+    };
+    runtime.auth.onStatus = update;
+    runtime.start(); update();
     try {
-      await new Promise<void>((resolve) => {
-        // Guard against the race where the signal aborts between the
-        // top-of-function check and the listener attach below. In that
-        // window `addEventListener("abort", ...)` would never fire,
-        // hanging startAccount forever.
-        if (ctx.abortSignal.aborted) {
-          resolve();
-          return;
-        }
-        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      await new Promise<void>(resolve => {
+        if (ctx.abortSignal.aborted) { resolve(); return; }
+        ctx.abortSignal.addEventListener('abort', () => resolve(), { once: true });
       });
     } finally {
-      // Always stop the bridge on the way out — covers normal abort,
-      // already-aborted-after-attach, and any thrown error in between.
-      g.__vauxrBridge?.stop();
+      runtime.stop(); runtime.auth.onStatus = undefined;
+      ctx.setStatus({ accountId: ctx.accountId, running: false, connected: false });
     }
   },
 };
 
 interface VauxrSection {
   url?: string;
-  token?: string;
+  strictTls?: boolean;
   voiceSystemPrompt?: string;
   alsoAllow?: string[];
   targetAgent?: string;
@@ -126,7 +117,8 @@ function resolveSection(cfg: OpenClawConfig): VauxrSection | undefined {
       | Record<string, unknown>
       | undefined
   )?.vauxr as { config?: VauxrSection } | undefined;
-  return channelsCfg ?? pluginsCfg?.config;
+  const config = pluginsCfg?.config;
+  return channelsCfg ?? (config as { vauxr?: VauxrSection } | undefined)?.vauxr ?? config;
 }
 
 // Key used by OpenClaw's per-sender tool policy resolver to match
