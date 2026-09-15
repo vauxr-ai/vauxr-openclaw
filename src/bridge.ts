@@ -1,5 +1,8 @@
 import WebSocket from "ws";
+import { endpoints } from "./transport.js";
+import type { VauxrAuth } from "./auth.js";
 import type { OpenClawPluginApi, OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 
 /** Vauxr protocol frames sent by vauxr to the channel plugin */
 interface VauxrInboundFrame {
@@ -8,8 +11,11 @@ interface VauxrInboundFrame {
   text?: string;
   state?: string;
   name?: string;
+  // Optional server-stored display metadata; never an identity or routing key.
+  deviceDisplayName?: unknown;
   code?: string;
   message?: string;
+  channelId?: string;
 }
 
 /** Vauxr protocol frames sent by the channel plugin to vauxr */
@@ -21,7 +27,8 @@ type VauxrOutboundFrame =
 
 interface VauxrBridgeConfig {
   url: string;
-  token?: string;
+  httpUrl?: string;
+  strictTls?: boolean;
   voiceSystemPrompt?: string;
 }
 
@@ -39,14 +46,9 @@ export class VauxrBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private unsubscribeEvents: (() => void) | null = null;
   private started = false;
-  // Inflight turns keyed by deviceId. channel.turn.run doesn't surface an SDK
-  // runId to the caller (unlike the old subagent.run path), so dispatch-time
-  // bookkeeping is keyed by deviceId; we then latch onto the SDK runId on the
-  // first event that arrives carrying a sessionKey (typically lifecycle.start)
-  // and use that runId for all subsequent events from the same run. Most
-  // event streams (assistant/tool/item) do NOT carry sessionKey — only the
-  // lifecycle stream does — so runId-based correlation is load-bearing once
-  // we've latched. One inflight turn per device at a time.
+  // One inflight turn per device. SDK run IDs are registered by the
+  // dispatch-specific onAgentRunStart callback, never inferred from a shared
+  // session key: a retired dispatch can still emit events for that session.
   private activeRuns = new Map<string, ActiveVauxrTurn>(); // deviceId → turn
   private runIdToTurn = new Map<string, ActiveVauxrTurn>(); // sdkRunId → turn
   // Per-device silent-reply sentinel state. "NO_REPLY" often arrives split
@@ -56,26 +58,32 @@ export class VauxrBridge {
   private sentinelBuffer = new Map<string, string>(); // deviceId → held delta text
   private sentinelMode = new Map<string, "passthrough" | "suppressed">();
   private wsUrl: string;
+  private authenticated = false;
+  private generation = 0;
+  #socketCredential?: string;
 
   constructor(
     private api: OpenClawPluginApi,
     private config: VauxrBridgeConfig,
+    private auth?: VauxrAuth,
   ) {
     // Derive WS URL from HTTP base URL
-    const base = config.url.replace(/\/$/, "");
-    this.wsUrl = base.replace(/^http/, "ws") + "/channel";
+    this.wsUrl = endpoints(config).wsUrl;
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    this.connect();
+    void this.connect();
     this.subscribeAgentEvents();
   }
 
   stop(): void {
+    this.generation++;
     if (!this.started) return;
     this.started = false;
+    this.retireTurns();
+    this.auth?.disconnected();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -95,28 +103,48 @@ export class VauxrBridge {
     this.reconnectMs = INITIAL_RECONNECT_MS;
   }
 
-  private connect(): void {
-    this.api.logger.debug?.(`[vauxr-bridge] Connecting to vauxr: ${this.wsUrl}`);
+  private retireTurns() {
+    this.authenticated = false;
+    this.activeRuns.clear(); this.runIdToTurn.clear();
+    this.sentinelBuffer.clear(); this.sentinelMode.clear();
+  }
 
-    const ws = new WebSocket(this.wsUrl);
+  async refresh(): Promise<void> {
+    const generation = this.generation;
+    let next: string;
+    try { next = await this.auth!.bearer(); }
+    catch { this.stop(); return; }
+    if (generation !== this.generation) return;
+    if (this.started && next !== this.#socketCredential) this.stop();
+    this.start();
+    if (this.authenticated) this.auth?.connected();
+  }
+
+  private async connect(): Promise<void> {
+    const generation = this.generation;
+    let token: string;
+    try { token = await this.auth!.bearer(); }
+    catch { this.stop(); return; }
+    if (!this.started || generation !== this.generation) return;
+    this.#socketCredential = token;
+    const ws = new WebSocket(this.wsUrl, { rejectUnauthorized: true, followRedirects: false, maxPayload: 1_048_576 });
     this.ws = ws;
 
     ws.on("open", () => {
       this.api.logger.debug?.("[vauxr-bridge] Connected to vauxr");
       this.reconnectMs = INITIAL_RECONNECT_MS;
 
-      // Authenticate with channel token
-      if (this.config.token) {
-        this.send({ type: "channel.auth", token: this.config.token });
-      }
+      if (this.ws !== ws || !this.started) return;
+      ws.send(JSON.stringify({ type: "channel.auth", token }));
     });
 
     ws.on("message", (data) => {
+      if (this.ws !== ws || !this.started) return;
       try {
         const frame = JSON.parse(String(data)) as VauxrInboundFrame;
         this.handleFrame(frame);
       } catch (err) {
-        this.api.logger.warn(`[vauxr-bridge] Failed to parse inbound frame: ${String(err)}`);
+        this.api.logger.warn("[vauxr-bridge] Invalid inbound frame");
       }
     });
 
@@ -129,11 +157,13 @@ export class VauxrBridge {
       // bridge's current ws.
       if (this.ws !== ws) return;
       this.ws = null;
+      this.retireTurns();
+      this.auth?.disconnected();
       if (this.started) this.scheduleReconnect();
     });
 
     ws.on("error", (err) => {
-      this.api.logger.warn(`[vauxr-bridge] WS error: ${String(err)}`);
+      this.api.logger.warn("[vauxr-bridge] WebSocket connection failed");
       // 'close' event will fire after this — reconnect handled there
     });
   }
@@ -145,47 +175,55 @@ export class VauxrBridge {
     );
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
+      void this.connect();
     }, this.reconnectMs);
     this.reconnectMs = Math.min(this.reconnectMs * 2, MAX_RECONNECT_MS);
   }
 
   private handleFrame(frame: VauxrInboundFrame): void {
+    if (!frame || typeof frame !== "object") return;
+    if (!this.authenticated && !["channel.ready", "error"].includes(frame.type)) return;
     switch (frame.type) {
       case "channel.transcript":
-        if (frame.deviceId && frame.text) {
+        if (frame.deviceId && frame.text && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
-          void this.dispatchTranscript(frame.deviceId, frame.text).catch(
+          void this.dispatchTranscript(frame.deviceId, frame.text, frame.deviceDisplayName).catch(
             (err) => {
               this.api.logger.warn(
-                `[vauxr-bridge] Unhandled transcript dispatch error for ${frame.deviceId}: ${String(err)}`,
+                "[vauxr-bridge] Transcript dispatch failed",
               );
             },
           );
         }
         break;
       case "channel.device_state":
-        this.api.logger.info(
-          `[vauxr-bridge] Device ${frame.deviceId ?? "unknown"}: ${frame.state ?? "unknown"}`,
-        );
+        // Device metadata is untrusted; do not mirror payloads into logs.
         break;
       case "channel.ready":
+        if (frame.channelId !== this.auth?.subject()) { this.stop(); return; }
+        this.auth?.connected();
+        if (this.auth?.status().state !== 'connected') { this.stop(); return; }
+        this.authenticated = true;
         this.api.logger.debug?.("[vauxr-bridge] Channel authenticated");
         break;
       case "error":
-        this.api.logger.warn(
-          `[vauxr-bridge] Error from vauxr: ${frame.code ?? "UNKNOWN"} — ${frame.message ?? "no details"}`,
-        );
+        this.api.logger.warn("[vauxr-bridge] Server rejected channel operation");
+        if (frame.code === "UNAUTHORIZED") {
+          this.stop();
+          // The old socket may be retired by a just-committed rotation ACK.
+          // Reconcile with the saved bearer before deciding this is revocation.
+          void this.auth?.tick().catch(() => undefined);
+        } else if (frame.code === "FORBIDDEN") this.stop();
         break;
       default:
         this.api.logger.warn(
-          `[vauxr-bridge] Unknown frame type: ${String((frame as unknown as Record<string, unknown>).type)}`,
+          "[vauxr-bridge] Unknown frame type",
         );
     }
   }
 
-  private async dispatchTranscript(deviceId: string, text: string): Promise<void> {
+  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown): Promise<void> {
     const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
     // Construct the sessionKey in the same form the old subagent.run path
     // ended up producing after openclaw's internal normalization
@@ -200,12 +238,13 @@ export class VauxrBridge {
     const protocolRunId = crypto.randomUUID();
     const turnId = `vauxr-${deviceId}-${Date.now()}`;
     this.api.logger.info(
-      `[vauxr-bridge] Dispatching transcript for ${sessionKey} (runId=${protocolRunId}): "${text}"`,
+      "[vauxr-bridge] Dispatching voice turn",
     );
 
     // Register before dispatch so onAgentEvent can correlate any event the
     // agent runtime emits for this turn back to the originating device.
-    this.activeRuns.set(deviceId, { deviceId, protocolRunId });
+    const activeTurn = { deviceId, protocolRunId };
+    this.activeRuns.set(deviceId, activeTurn);
 
     // Minimal inbound context. Voice channels don't carry replies, media,
     // mentions, forwards, etc. — most MsgContext fields stay undefined.
@@ -215,11 +254,12 @@ export class VauxrBridge {
       From: deviceId,
       SenderId: deviceId,
       SenderName: deviceId,
+      ConversationLabel: friendlyDeviceTitle(deviceDisplayName) ?? deviceId,
       SessionKey: sessionKey,
       Provider: "vauxr",
       Surface: "vauxr",
       Timestamp: Date.now(),
-    };
+    } satisfies MsgContext;
 
     try {
       // OpenClaw 2026.8 requires an explicit agent id when resolving session
@@ -275,7 +315,14 @@ export class VauxrBridge {
                 dispatcher,
                 // Voice replies are streamed to the originating device above.
                 // Do not inherit a harness/config default requiring message.send.
-                replyOptions: { sourceReplyDeliveryMode: "automatic" },
+                replyOptions: {
+                  sourceReplyDeliveryMode: "automatic",
+                  onAgentRunStart: (runId) => {
+                    if (this.activeRuns.get(deviceId) === activeTurn) {
+                      this.runIdToTurn.set(runId, activeTurn);
+                    }
+                  },
+                },
               });
             },
             // Required since OpenClaw 2026.8 for inbound adapters. Voice
@@ -287,13 +334,13 @@ export class VauxrBridge {
               turnAdoptionLifecycle: undefined,
               onDispatchSkipped: (reason: unknown) => {
                 this.api.logger.warn(
-                  `[vauxr-bridge] Dispatch skipped for ${sessionKey}: ${JSON.stringify(reason)}`,
+                  "[vauxr-bridge] Dispatch skipped",
                 );
                 this.send({
                   type: "channel.response.error",
                   deviceId,
                   runId: protocolRunId,
-                  message: `dispatch skipped: ${JSON.stringify(reason)}`,
+                  message: "Dispatch skipped",
                 });
               },
             },
@@ -302,53 +349,35 @@ export class VauxrBridge {
       });
     } catch (err) {
       this.api.logger.warn(
-        `[vauxr-bridge] Failed to dispatch transcript for ${sessionKey}: ${String(err)}`,
+        "[vauxr-bridge] Transcript dispatch failed",
       );
       this.send({
         type: "channel.response.error",
         deviceId,
         runId: protocolRunId,
-        message: String(err),
+        message: "Transcript dispatch failed",
       });
     } finally {
       // channel.turn.run awaits the full turn (including the agent run inside
       // runDispatch), so by this point all events have fired and the turn is
-      // done. Safe to clean up correlation state here. runIdToTurn entries
-      // for this device are cleaned in the lifecycle.end branch of the event
-      // handler — best-effort sweep here in case lifecycle.end never fired.
+      // done. Only this exact turn may clean up its correlation state; an
+      // unresolved retired dispatch may finish after a replacement starts.
+      if (this.activeRuns.get(deviceId) !== activeTurn) return;
       this.activeRuns.delete(deviceId);
       this.sentinelBuffer.delete(deviceId);
       this.sentinelMode.delete(deviceId);
       for (const [rid, turn] of this.runIdToTurn) {
-        if (turn.deviceId === deviceId) this.runIdToTurn.delete(rid);
+        if (turn === activeTurn) this.runIdToTurn.delete(rid);
       }
     }
   }
 
   private subscribeAgentEvents(): void {
     this.unsubscribeEvents = this.api.runtime.events.onAgentEvent((event) => {
-      // Two-stage correlation:
-      //   1. If the event carries a sessionKey (lifecycle events do, most
-      //      others don't), parse the deviceId and look up the inflight turn
-      //      we registered in dispatchTranscript. Cache the SDK runId so
-      //      subsequent sessionKey-less events from the same run can be
-      //      matched by runId alone.
-      //   2. Otherwise, look up by event.runId — populated by step (1) for
-      //      this turn's prior lifecycle event.
-      // pi-embedded's first lifecycle.start carries sessionKey and arrives
-      // well before any assistant deltas, so the latch is always primed
-      // before delta events need to route.
-      let active: ActiveVauxrTurn | undefined;
-      const sk = event.sessionKey;
-      if (sk) {
-        const m = sk.match(/(?:^|:)vauxr:([^:]+)/);
-        if (m) {
-          active = this.activeRuns.get(m[1]);
-          if (active) this.runIdToTurn.set(event.runId, active);
-        }
-      }
-      if (!active) active = this.runIdToTurn.get(event.runId);
-      if (!active) return;
+      // Only the dispatch that owns this SDK run can register it. Late
+      // starts/events from a retired turn cannot latch onto its replacement.
+      const active = this.runIdToTurn.get(event.runId);
+      if (!active || this.activeRuns.get(active.deviceId) !== active) return;
       const { deviceId, protocolRunId: runId } = active;
 
       if (event.stream === "assistant") {
@@ -405,23 +434,32 @@ export class VauxrBridge {
 
       if (event.stream === "error") {
         this.api.logger.warn(
-          `[vauxr-bridge] Agent error for device ${deviceId}: ${JSON.stringify(event.data)}`,
+          "[vauxr-bridge] Agent error",
         );
         this.send({
           type: "channel.response.error",
           deviceId,
           runId,
-          message: String(event.data["message"] ?? "Agent error"),
+          message: "Agent error",
         });
       }
     });
   }
 
   private send(frame: VauxrOutboundFrame): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if ("runId" in frame && this.activeRuns.get(frame.deviceId)?.protocolRunId !== frame.runId) return;
+    if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(frame));
     }
   }
+}
+
+// Reject malformed display metadata rather than coercing objects or rendering
+// control/bidi characters. Raw legacy `name` / hello labels are not authoritative.
+function friendlyDeviceTitle(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 128) return undefined;
+  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(value)) return undefined;
+  return value.trim() || undefined;
 }
 
 /**

@@ -1,182 +1,96 @@
 # vauxr-openclaw
 
-An OpenClaw channel plugin that bridges Vauxr voice devices into the OpenClaw agent loop. It connects to [Vauxr](https://github.com/vauxr-ai/vauxr) over WebSocket, dispatches inbound transcripts to the agent, and streams response deltas back for TTS playback.
+An OpenClaw channel plugin that connects paired Vauxr voice devices to the agent loop and streams responses to the server's configured speech provider. It also exposes scoped device tools.
 
-It also registers three agent tools for direct device control from any session.
+## Compatibility and setup
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Requires **OpenClaw 2026.9.3 or later** with the public secret-file SDK and a POSIX filesystem supporting private permissions and file/directory fsync. The versioned server contracts are tested against Vauxr commit `16968a73b7610c917a9922d94d8c7ef187f7dda3` (integration, enrollment and lifecycle v1). This is an auth migration requiring compatible server and firmware releases; older shared channel tokens are not supported.
 
----
-
-## How it works
-
-### Channel Plugin Bridge (recommended)
-
-```
-Vauxr  <──WS (Vauxr protocol)──>  vauxr-openclaw plugin  <──>  OpenClaw agent loop
-```
-
-- The plugin opens an outbound WS connection to Vauxr on startup
-- Inbound transcripts from devices are dispatched into the agent loop as `vauxr:{device_id}` sessions
-- Agent response deltas stream back to Vauxr in real time for TTS playback
-- A `before_prompt_build` hook injects a voice-optimized system prompt for all vauxr sessions
-
-### Fallback: Direct Operator WS
-
-```
-Vauxr  <──WS (OpenClaw protocol)──>  OpenClaw gateway
-```
-
-If installing the plugin is undesirable, Vauxr can connect directly to the OpenClaw gateway as an operator. This still works but is limited:
-
-- No voice system prompt injection
-- No session detection for vauxr-specific behavior
-- No plugin-side control over prompt or session routing
-
-To use fallback mode, configure Vauxr with `OPENCLAW_URL` and `OPENCLAW_TOKEN` environment variables and do not install this plugin.
-
----
-
-## Tools
-
-| Tool | What it does |
-|---|---|
-| `vauxr_devices` | Lists all Vauxr devices connected to Vauxr, with their IDs, names, and connection state |
-| `vauxr_announce` | Synthesizes text via Piper TTS and plays it through a device's speaker |
-| `vauxr_control` | Sends a control command to a device (`set_volume`, `mute`, `unmute`, `reboot`, `ota`, `set_barge_in`) |
-
-These tools use the Vauxr REST API and work in any session, not just vauxr voice sessions.
-
-`set_barge_in` takes `enabled: true | false`. It is stored on the Vauxr server (not firmware). Disable it if echo causes the speaker to interrupt itself while the assistant is talking.
-
----
-
-## Requirements
-
-- OpenClaw gateway
-- [Vauxr](https://github.com/vauxr-ai/vauxr) running and reachable
-- At least one paired Vauxr device connected to Vauxr
-
----
-
-## Installation
-
-Install from ClawHub 🦞
+Install the plugin from a reviewed release or local build:
 
 ```bash
-openclaw plugins install clawhub:@vauxr/openclaw
-```
-
-Or install from the repo directly:
-
-```bash
+npm ci
+npm run build
 openclaw plugins install path:/path/to/vauxr-openclaw
 ```
 
-Then configure in your OpenClaw config:
+Configure only the server addresses and your preferences:
 
 ```json
 {
   "channels": {
     "vauxr": {
-      "url": "http://vauxr:8765",
-      "token": "your-channel-token",
+      "url": "http://vauxr.local:8765",
+      "httpUrl": "http://vauxr.local:8080",
       "otaPublicBase": "http://vauxr.local:8080",
-      "voiceSystemPrompt": "You are responding to a voice device. Use plain speech only — no emojis, no markdown, no code blocks. Keep replies concise."
+      "targetAgent": "assistant"
     }
   },
   "plugins": {
     "entries": {
       "vauxr": {
         "enabled": true,
-        "hooks": {
-          "allowPromptInjection": true
-        }
+        "hooks": { "allowConversationAccess": true }
       }
     }
   }
 }
 ```
 
-- `url` — Vauxr base URL (HTTP)
-- `token` — channel token generated in the Vauxr web client
-- `voiceSystemPrompt` — optional, appended to the system prompt for all vauxr sessions
-- `alsoAllow` — optional, extra tools to grant vauxr-originated agent runs (see below)
-- `targetAgent` — required if `alsoAllow` is set; the id of the agent that handles vauxr sessions
-- `otaPublicBase` — Origin the device uses to download firmware (e.g. `http://vauxr.local:8080`). Required for default OTA when the tool is called without `url`. Must be reachable by the speaker — do not use a Docker DNS name.
+1. Complete owner setup in Vauxr first. On channel startup, the plugin automatically creates a bounded **Connect OpenClaw** request.
+2. Use `/vauxr status` from an authorized OpenClaw command surface. Compare its eight-character code with the intended request in the Vauxr owner UI, then approve there. The code is a confirmation code, not a bearer credential.
+3. The plugin retrieves its own scoped credential, saves it automatically through OpenClaw's protected secret-file SDK, flushes and reads it back, then acknowledges receipt. No credential copy/paste is involved.
+4. Status becomes `connected` only after the server authenticates the channel WebSocket. Select this integration as the active voice channel in the owner UI; enrollment does not change routing automatically.
 
-The `allowPromptInjection` hook permission is required for the voice system prompt to take effect.
+`/vauxr pair` explicitly starts a new request after denial, expiry, cancellation or re-pair-required. `/vauxr cancel` cancels unfinished setup. These commands require authorized access and gateway `operator.admin` scope. No command or tool accepts an owner or integration credential. Pending setup and unconfirmed ACKs resume after restart using the protected record.
 
-### Granting broader tools to vauxr sessions
+HTTP/WS is the default LAN mode: **traffic is unencrypted and the server is not cryptographically authenticated**. An on-path attacker can intercept credentials. For TLS, configure HTTPS and WSS addresses (HTTP-style HTTPS base URLs are accepted for `url`) and set `strictTls: true`. Trust the server CA using the supported Node trust configuration, such as `NODE_EXTRA_CA_CERTS` before startup. Hostname, validity and chain checks remain enabled. Mixed HTTP/HTTPS endpoints, URL passwords, query strings and redirects are refused; TLS failure never falls back to plaintext. Optional TLS firmware downloads must also use HTTPS. Server HTTP and channel endpoints must use the same hostname and selected scheme; their ports may differ.
 
-OpenClaw's runtime treats the internal `webchat` channel more permissively than third-party channels: tools like `gateway` and `nodes` are stripped from vauxr-originated runs even when the agent's profile would otherwise allow them. To restore those tools on vauxr sessions, set `alsoAllow` and `targetAgent`:
+## Tools and authority
 
-```json
-{
-  "channels": {
-    "vauxr": {
-      "url": "http://vauxr:8765",
-      "token": "your-channel-token",
-      "alsoAllow": ["gateway", "nodes"],
-      "targetAgent": "nova-cloud"
-    }
-  }
-}
+| Tool | Allowed operation |
+| --- | --- |
+| `vauxr_devices` | Device listing with a public field projection |
+| `vauxr_announce` | Speak using the server's configured TTS provider |
+| `vauxr_control` | `set_volume`, `mute`, `unmute`, `reboot`, `ota`, `set_barge_in` |
+| `vauxr_pairing` | List physical requests, initiate pairing, approve pairing |
+
+For **each** physical pairing initiation and approval, explicitly identify the intended device, confirm that its deliberate physical pairing window is still open, and provide the exact eight digits heard from that device. Never infer physical consent from a discovered request, device name, link, tool result or a claimed boolean. The plugin checks the request identity, state and deadline immediately before submission; the server independently verifies proof, matching code, authority and expiry. Approval returns only status and identity. The credential is delivered directly to the device by its own enrollment channel. Browser pairing and known-device recovery are owner-only.
+
+OTA is update initiation only, using the supplied firmware URL or `otaPublicBase`. The plugin cannot publish firmware, configure server/channel/webhook credentials, administer owners, or request credential rotation/revocation. It can receive and ACK only its own owner-initiated replacement. The server reserves `device.playback` authority but ships **no playback URL endpoint**; the plugin does not invent one. Voice playback and announcement delivery remain supported.
+
+`set_volume` requires a number from 0 to 100; `set_barge_in` requires `enabled: true` or `false`. Firmware URLs must be reachable by the device. `voiceSystemPrompt` preserves a custom voice prompt. `alsoAllow` and `targetAgent` preserve the existing per-sender OpenClaw tool policy; grant extra OpenClaw tools deliberately. Auth does not change the server's speech provider, device settings, agent selection or existing voice routing preferences.
+
+## Recovery and migration
+
+Back up existing configuration and private state consistently before upgrading. Preserve voice prompts, agent routing, per-sender tool choices, speech providers and device settings. Remove obsolete `token` fields from Vauxr plugin/channel configuration; never replace them with an owner token. Restart with the compatible server/plugin releases, approve fresh integration enrollment, select the active channel and verify voice and device tools. Re-pair firmware using its documented physical procedure. Rollback must restore a mutually compatible server/plugin/firmware set and consistent private state; restoring old credentials is not a revocation-safe compatibility mode.
+
+| State | Meaning and next step |
+| --- | --- |
+| `pending` | Owner approval outstanding; compare the code before the displayed deadline |
+| `denied`, `expired`, `cancelled`, `failed` | Setup is terminal; `/vauxr pair` requests fresh approval |
+| `connecting`, `disconnected` | Credential setup completed, but channel authentication/reconnect is outstanding |
+| `connected` | Channel authenticated; owner routing selection is still independent |
+| `transport_error` | Network, certificate or protocol request failed; retry uses the same binding with backoff |
+| `storage_error` | Private storage/readback/flush failed; repair storage access before continuing |
+| `re_pair_required` | Revoked, stale binding or one-time credential delivery lost; use `/vauxr pair` and fresh owner approval |
+
+Rotation saves the replacement and operation ID before ACK, retries the same saved ACK after a lost reply/restart, and reconnects with replacement authority. The old slot is retained until the new slot is durable. A delivery response lost before storage cannot be fetched again; both credentials expire if rotation is not acknowledged within the server overlap window. Fresh owner-approved pairing is then required. Revoke stops authority and never automatically enrolls or revives the old integration. Re-pairing creates a new subject; the owner should revoke an obsolete integration rather than leave unused authority behind.
+
+Protected records live below OpenClaw's state directory in `vauxr-auth/<binding hash>/credentials.json`, outside ordinary configuration. These files are **permission-protected, not encrypted at rest**. Do not print, attach, copy into chat, or include them in support bundles. The plugin rejects unsafe ownership, permissions, links, corrupt records and unsupported durability. See [storage and contract verification](docs/auth-lifecycle.md).
+
+## Development verification
+
+```bash
+npm ci
+npm test
+VAUXR_CONTRACT_SOURCE=/path/to/exact/reviewed/server npm run test:contract
 ```
 
-On configure, the plugin writes a `channel:vauxr:*` entry into `agents.list[id=targetAgent].tools.toolsBySender`. The expansion is scoped to vauxr-originated runs only — other channels are unaffected. Be deliberate about what you grant: `gateway` lets the model restart OpenClaw, `nodes` lets it invoke commands on connected hardware nodes.
+The contract suite requires the exact server head above plus Python with `aiohttp` and `cryptography`; it imports server code read-only and writes fixtures only under this worktree's ignored `test-artifacts`. Without the explicit source setting, ordinary `npm test` reports that suite skipped. The release verification command supplies it and must have zero skips. Local HTTPS/WSS tests require `openssl`, generate temporary certificates, and test trusted, untrusted, wrong-name and expired certificates.
 
----
-
-## Usage
-
-Once installed, the plugin connects to Vauxr automatically. Voice turns from any device are routed through the plugin into the agent loop, and responses stream back for TTS playback.
-
-The agent tools are available in all sessions:
-
-**Announce something:**
-> "Announce through the living room speaker that dinner is ready."
-
-**Device control:**
-> "Mute the bedroom speaker."
-> "Turn the volume up on the kitchen device."
-> "OTA the living room speaker with http://vauxr.local:8080/firmware/satellite1.bin"
-
----
-
-## Architecture
-
-```
-Vauxr device (mic)
-    │
-    │  voice.start / audio / voice.end
-    ▼
-Vauxr (STT: Whisper)
-    │
-    │  channel.transcript (WS)
-    ▼
-vauxr-openclaw plugin
-    │
-    │  subagent.run(sessionKey: "vauxr:{device_id}")
-    ▼
-OpenClaw agent loop
-    │
-    │  agent event deltas
-    ▼
-vauxr-openclaw plugin
-    │
-    │  channel.response.delta (WS)
-    ▼
-Vauxr (TTS: Piper)
-    │
-    │  0x02 audio frames
-    ▼
-Vauxr device (speaker)
-```
-
----
+These automated checks do not establish physical button/audio behavior, live browser trust, device OTA or end-to-end speech-provider interoperability. Those require separately authorized integration acceptance. This change performs no deployment or OTA.
 
 ## License
 
-Vauxr OpenClaw is licensed under the [MIT License](LICENSE).
-
+[MIT](LICENSE).

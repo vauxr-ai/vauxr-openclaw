@@ -35,7 +35,7 @@ Refactor `vauxr-openclaw` so the WebSocket bridge dispatches inbound transcripts
 
 These are scoped out of the initial impl but **not absolute** — if any becomes architecturally necessary during impl, we'll raise it for discussion rather than work around it.
 
-- Adding pairing, DM allowlists, or setup wizards. Vauxr devices are trusted local hardware and `src/channel.ts` explicitly opts out of those surfaces.
+- Historical scope boundary: the original turn refactor did not implement auth. Issue #36 supersedes the trusted-local-hardware assumption: the channel now requires owner-approved integration enrollment, protected storage and scoped physical-device pairing. See [auth lifecycle](../auth-lifecycle.md).
 - Changing the WebSocket protocol between vauxr-openclaw and vauxr-ws. The frame schemas (`channel.transcript`, `channel.response.delta`, `channel.response.end`, `channel.response.error`) should stay compatible if at all possible — but a server-side change is fair game if `channel.turn.run`'s adapter contract genuinely requires inbound metadata vauxr doesn't currently supply.
 - Changing the user-facing `channels.vauxr` config schema. Same caveat — preferred to avoid, but not ruled out if the channel SDK requires a config field (e.g. an explicit account identifier) the current schema lacks.
 - Touching the REST tools layer (`src/tools.ts`, `src/api-client.ts`). No anticipated cause to change these.

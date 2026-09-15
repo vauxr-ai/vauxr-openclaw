@@ -1,11 +1,23 @@
 {
   "id": "vauxr",
-  "legacyPluginIds": ["vauxr/index", "vauxr/setup-entry"],
+  "legacyPluginIds": [
+    "vauxr/index",
+    "vauxr/setup-entry"
+  ],
   "kind": "channel",
-  "channels": ["vauxr"],
+  "channels": [
+    "vauxr"
+  ],
   "name": "Vauxr",
   "description": "Vauxr voice device channel plugin for OpenClaw",
-  "contracts": { "tools": ["vauxr_devices", "vauxr_announce", "vauxr_control"] },
+  "contracts": {
+    "tools": [
+      "vauxr_devices",
+      "vauxr_announce",
+      "vauxr_control",
+      "vauxr_pairing"
+    ]
+  },
   "channelConfigs": {
     "vauxr": {
       "label": "Vauxr",
@@ -13,15 +25,13 @@
       "schema": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["url", "token"],
+        "required": [
+          "url"
+        ],
         "properties": {
           "url": {
             "type": "string",
             "description": "Vauxr base URL (e.g. http://vauxr.local:8765)"
-          },
-          "token": {
-            "type": "string",
-            "description": "Channel token issued by Vauxr"
           },
           "voiceSystemPrompt": {
             "type": "string",
@@ -29,7 +39,9 @@
           },
           "alsoAllow": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Extra tool names to grant vauxr-originated agent runs (merged into the target agent's allowlist via toolsBySender). Requires targetAgent."
           },
           "targetAgent": {
@@ -43,6 +55,11 @@
           "otaPublicBase": {
             "type": "string",
             "description": "Origin the device uses to fetch firmware, e.g. http://vauxr.local:8080. Used as the default OTA URL base."
+          },
+          "strictTls": {
+            "type": "boolean",
+            "default": false,
+            "description": "Require HTTPS/WSS and reject HTTP/WS. HTTPS always validates certificates with no downgrade."
           }
         }
       }
@@ -52,26 +69,58 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "url": {
+        "type": "string",
+        "description": "Vauxr base URL (e.g. http://vauxr.local:8765)"
+      },
+      "voiceSystemPrompt": {
+        "type": "string",
+        "description": "System prompt appended to vauxr voice sessions"
+      },
+      "alsoAllow": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Extra tool names to grant vauxr-originated agent runs (merged into the target agent's allowlist via toolsBySender). Requires targetAgent."
+      },
+      "targetAgent": {
+        "type": "string",
+        "description": "Id of the agent that handles vauxr sessions and should receive the alsoAllow expansion. Required when alsoAllow is set."
+      },
+      "httpUrl": {
+        "type": "string",
+        "description": "Vauxr HTTP API base (defaults to url with :8765 replaced by :8080)"
+      },
+      "otaPublicBase": {
+        "type": "string",
+        "description": "Origin the device uses to fetch firmware, e.g. http://vauxr.local:8080. Used as the default OTA URL base."
+      },
+      "strictTls": {
+        "type": "boolean",
+        "default": false,
+        "description": "Require HTTPS/WSS and reject HTTP/WS. HTTPS always validates certificates with no downgrade."
+      },
       "vauxr": {
         "type": "object",
-        "required": ["url"],
         "additionalProperties": false,
+        "required": [
+          "url"
+        ],
         "properties": {
           "url": {
             "type": "string",
-            "description": "Vauxr base URL (e.g. http://vauxr:8765)"
-          },
-          "token": {
-            "type": "string",
-            "description": "Operator token for Vauxr API auth"
+            "description": "Vauxr base URL (e.g. http://vauxr.local:8765)"
           },
           "voiceSystemPrompt": {
             "type": "string",
-            "description": "Text appended to the system prompt for all vauxr sessions. Defaults to a voice-optimized instruction set."
+            "description": "System prompt appended to vauxr voice sessions"
           },
           "alsoAllow": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "Extra tool names to grant vauxr-originated agent runs (merged into the target agent's allowlist via toolsBySender). Requires targetAgent."
           },
           "targetAgent": {
@@ -85,6 +134,11 @@
           "otaPublicBase": {
             "type": "string",
             "description": "Origin the device uses to fetch firmware, e.g. http://vauxr.local:8080. Used as the default OTA URL base."
+          },
+          "strictTls": {
+            "type": "boolean",
+            "default": false,
+            "description": "Require HTTPS/WSS and reject HTTP/WS. HTTPS always validates certificates with no downgrade."
           }
         }
       }
