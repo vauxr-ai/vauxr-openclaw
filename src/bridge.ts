@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { endpoints } from "./transport.js";
 import type { VauxrAuth } from "./auth.js";
 import type { OpenClawPluginApi, OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 
 /** Vauxr protocol frames sent by vauxr to the channel plugin */
 interface VauxrInboundFrame {
@@ -10,6 +11,8 @@ interface VauxrInboundFrame {
   text?: string;
   state?: string;
   name?: string;
+  // Optional server-stored display metadata; never an identity or routing key.
+  deviceDisplayName?: unknown;
   code?: string;
   message?: string;
   channelId?: string;
@@ -185,7 +188,7 @@ export class VauxrBridge {
         if (frame.deviceId && frame.text && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
-          void this.dispatchTranscript(frame.deviceId, frame.text).catch(
+          void this.dispatchTranscript(frame.deviceId, frame.text, frame.deviceDisplayName).catch(
             (err) => {
               this.api.logger.warn(
                 "[vauxr-bridge] Transcript dispatch failed",
@@ -220,7 +223,7 @@ export class VauxrBridge {
     }
   }
 
-  private async dispatchTranscript(deviceId: string, text: string): Promise<void> {
+  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown): Promise<void> {
     const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
     // Construct the sessionKey in the same form the old subagent.run path
     // ended up producing after openclaw's internal normalization
@@ -251,11 +254,12 @@ export class VauxrBridge {
       From: deviceId,
       SenderId: deviceId,
       SenderName: deviceId,
+      ConversationLabel: friendlyDeviceTitle(deviceDisplayName) ?? deviceId,
       SessionKey: sessionKey,
       Provider: "vauxr",
       Surface: "vauxr",
       Timestamp: Date.now(),
-    };
+    } satisfies MsgContext;
 
     try {
       // OpenClaw 2026.8 requires an explicit agent id when resolving session
@@ -448,6 +452,14 @@ export class VauxrBridge {
       this.ws.send(JSON.stringify(frame));
     }
   }
+}
+
+// Reject malformed display metadata rather than coercing objects or rendering
+// control/bidi characters. Raw legacy `name` / hello labels are not authoritative.
+function friendlyDeviceTitle(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 128) return undefined;
+  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(value)) return undefined;
+  return value.trim() || undefined;
 }
 
 /**
