@@ -3,13 +3,14 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { vauxrPlugin } from "./src/channel.js";
 import { VauxrAPIClient } from "./src/api-client.js";
 import { registerTools } from "./src/tools.js";
-import { VauxrBridge } from "./src/bridge.js";
+import { VauxrRuntime } from "./src/runtime.js";
+import { endpoints } from "./src/transport.js";
 import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./src/defaults.js";
 
 interface VauxrConfig {
   url: string;
   httpUrl?: string;
-  token?: string;
+  strictTls?: boolean;
   voiceSystemPrompt?: string;
   otaPublicBase?: string;
 }
@@ -24,12 +25,11 @@ function hasConversationAccess(api: OpenClawPluginApi): boolean {
 }
 
 function resolveConfig(api: OpenClawPluginApi): VauxrConfig {
-  if (api.pluginConfig && typeof api.pluginConfig === "object" && "url" in api.pluginConfig) {
-    return api.pluginConfig as unknown as VauxrConfig;
-  }
   const cfg = api.config as Record<string, unknown>;
   const channels = cfg.channels as Record<string, unknown> | undefined;
-  return (channels?.vauxr ?? {}) as VauxrConfig;
+  if (channels?.vauxr) return channels.vauxr as VauxrConfig;
+  const config = api.pluginConfig as VauxrConfig & { vauxr?: VauxrConfig } | undefined;
+  return config?.vauxr ?? config ?? {} as VauxrConfig;
 }
 
 const entry = defineChannelPluginEntry({
@@ -40,33 +40,28 @@ const entry = defineChannelPluginEntry({
   registerFull(api) {
     const config = resolveConfig(api);
 
-    // REST tools — use explicit httpUrl if set, otherwise derive from ws url
-    // (vauxr WS is on :8765, HTTP API is on :8080)
-    const httpBase = config.httpUrl ?? (config.url ? config.url.replace(/:8765(\/?$)/, ":8080") : "");
-
-    if (!httpBase) {
-      // config.url not available yet (early registration) — skip bridge/tools
+    if (!config.url) return;
+    const selected = endpoints(config);
+    const g = globalThis as { __vauxrRuntime?: VauxrRuntime };
+    // An in-process gateway restart preserves globals but retires the old
+    // plugin API's gateway authority. Never dispatch with that stale API.
+    if (!g.__vauxrRuntime?.isOwnedBy?.(api)) {
+      g.__vauxrRuntime?.stop();
+      g.__vauxrRuntime = new VauxrRuntime(api, config);
+    }
+    const runtime = g.__vauxrRuntime;
+    if (runtime.origin !== selected.origin || runtime.wsUrl !== selected.wsUrl) {
+      api.logger.warn("[vauxr] Server configuration changed; restart the gateway to apply it.");
       return;
     }
-
-    const client = new VauxrAPIClient(httpBase, config.token ?? "", config.otaPublicBase);
+    const client = new VauxrAPIClient(selected.origin, () => runtime.auth.bearer(), config.otaPublicBase, config.strictTls);
     registerTools(api, client);
-
-    // Construct the WS bridge but DO NOT start it here. `registerFull` is
-    // invoked from introspection paths too (e.g. `openclaw doctor`), and
-    // starting the bridge here would open a live WebSocket to vauxr during
-    // diagnostics. The bridge is started later by `gateway.startAccount`
-    // (see channel.ts), which only fires when the gateway is actually
-    // bringing the channel up for runtime use. The globalThis stash bridges
-    // the two scopes because `startAccount` doesn't have access to `api`.
-    //
-    // The single-bridge guard remains here so multiple `registerFull`
-    // invocations in the same process don't reconstruct the bridge — they'd
-    // contend for the single active channel slot in vauxr otherwise.
-    const g = globalThis as { __vauxrBridge?: VauxrBridge };
-    if (!g.__vauxrBridge) {
-      g.__vauxrBridge = new VauxrBridge(api, config);
-    }
+    api.registerCommand({
+      name: "vauxr",
+      description: "Vauxr connection status, pair or cancel. Never supply a credential.",
+      acceptsArgs: true, requireAuth: true, requiredScopes: ["operator.admin"],
+      handler: async (ctx) => ({ text: await runtime.command(ctx.args?.trim() || "status") }),
+    });
 
     // Since OpenClaw 2026.8, non-bundled plugins need explicit consent to use
     // before_prompt_build. Without it the gateway silently blocks the hook and
