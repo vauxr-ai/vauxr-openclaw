@@ -43,7 +43,12 @@ const entry = defineChannelPluginEntry({
     if (!config.url) return;
     const selected = endpoints(config);
     const g = globalThis as { __vauxrRuntime?: VauxrRuntime };
-    if (!g.__vauxrRuntime) g.__vauxrRuntime = new VauxrRuntime(api, config);
+    // An in-process gateway restart preserves globals but retires the old
+    // plugin API's gateway authority. Never dispatch with that stale API.
+    if (!g.__vauxrRuntime?.isOwnedBy?.(api)) {
+      g.__vauxrRuntime?.stop();
+      g.__vauxrRuntime = new VauxrRuntime(api, config);
+    }
     const runtime = g.__vauxrRuntime;
     if (runtime.origin !== selected.origin || runtime.wsUrl !== selected.wsUrl) {
       api.logger.warn("[vauxr] Server configuration changed; restart the gateway to apply it.");

@@ -50,6 +50,32 @@ test('entry introspection registers safe commands/tools, preserves custom voice 
   delete globalThis.__vauxrRuntime;
 });
 
+test('new gateway registration retires the old runtime and binds dispatch to the new API', async () => {
+  delete globalThis.__vauxrRuntime;
+  const api = () => ({ config: config(), pluginConfig: {}, registrationMode: 'full',
+    logger: { warn() {}, info() {} }, registerChannel() {}, registerTool() {},
+    registerCommand() {}, on() {},
+    runtime: { state: { resolveStateDir: () => '/tmp/vauxr-restart-no-io' } } });
+  const firstApi = api();
+  await entry.register(firstApi);
+  const first = globalThis.__vauxrRuntime;
+  let stopped = 0;
+  first.stop = () => { stopped++; };
+  await entry.register(firstApi);
+  assert.equal(globalThis.__vauxrRuntime, first, 'same registration retains runtime');
+  assert.equal(stopped, 0);
+  const nextApi = api();
+  await entry.register(nextApi);
+  const next = globalThis.__vauxrRuntime;
+  assert.notEqual(next, first, 'restart must not retain old gateway capability');
+  assert.equal(stopped, 1);
+  assert.equal(next.isOwnedBy(nextApi), true);
+  assert.equal(next.bridge.api, nextApi, 'voice dispatch uses current gateway API');
+  assert.equal(next.origin, first.origin, 'enrollment store binding remains stable');
+  assert.equal(next.wsUrl, first.wsUrl);
+  delete globalThis.__vauxrRuntime;
+});
+
 test('gateway publishes actual states and abort stops service without status credentials', async () => {
   const states = []; let started = 0, stopped = 0;
   let state = 'pending';

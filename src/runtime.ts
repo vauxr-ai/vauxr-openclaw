@@ -14,13 +14,14 @@ export class VauxrRuntime {
   private timer?: ReturnType<typeof setTimeout>;
   private work?: Promise<void>;
   private failures = 0;
-  constructor(api: OpenClawPluginApi, config: { url: string; httpUrl?: string; strictTls?: boolean }) {
+  constructor(private readonly api: OpenClawPluginApi, config: { url: string; httpUrl?: string; strictTls?: boolean }) {
     const selected = endpoints(config);
     this.origin = selected.origin; this.wsUrl = selected.wsUrl;
     this.auth = new VauxrAuth(this.origin, this.wsUrl,
       createProtectedStore(api.runtime.state.resolveStateDir(), `${this.origin}\n${this.wsUrl}`));
     this.bridge = new VauxrBridge(api, config, this.auth);
   }
+  isOwnedBy(api: OpenClawPluginApi): boolean { return this.api === api; }
   start() { if (this.running) return; this.running = true; void this.cycle(); }
   stop() { this.running = false; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.bridge.stop(); }
   private async cycle() {
