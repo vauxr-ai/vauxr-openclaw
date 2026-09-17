@@ -25,6 +25,8 @@ test('pinned SDK bootstraps selected profile and records without dispatch, with 
     const entries = await readVisibleSessionTranscriptMessageEntries(scope);
     assert.equal(entries.length, 2, 'retry must not duplicate transcript messages');
     assert.match(entries[1].message.content[0].text, /delivery unconfirmed/);
+    assert.deepEqual(conversations.release('browser', 'session1'), { released: true });
+    assert.throws(() => conversations.scope('browser', 'session1'), /session changed/);
     const resume = await conversations.bootstrap('browser', 'session2');
     assert.equal(resume.sessionId, bootstrap.sessionId);
     assert.equal(resume.messages.length, 2);

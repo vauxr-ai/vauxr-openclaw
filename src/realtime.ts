@@ -55,6 +55,12 @@ export class RealtimeConversations {
     return scope;
   }
 
+  /** Drop only this ephemeral realtime connection scope; transcript ownership persists. */
+  release(deviceId: string, session: string) {
+    this.sessions.delete(`${deviceId}:${session}`);
+    return { released: true };
+  }
+
   async record(deviceId: string, session: string, fragments: Fragment[]) {
     const scope = this.scope(deviceId, session);
     if (!Array.isArray(fragments) || fragments.length > 64) throw new Error("Invalid transcript batch");

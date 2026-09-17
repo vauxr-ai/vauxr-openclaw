@@ -250,6 +250,7 @@ export class VauxrBridge {
         work = previous.catch(() => undefined).then(async () => {
           this.conversations ??= new RealtimeConversations(this.api.config, resolveTargetAgentId(this.api.config));
           if (operation === "bootstrap") return this.conversations.bootstrap(deviceId, session);
+          if (operation === "release") return this.conversations.release(deviceId, session);
           this.conversations.scope(deviceId, session);
           if (operation === "record") return this.conversations.record(deviceId, session, payload.fragments as never);
           if (operation === "consult") {
