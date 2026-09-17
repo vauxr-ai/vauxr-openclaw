@@ -122,7 +122,7 @@ function resolveSection(cfg: OpenClawConfig): VauxrSection | undefined {
 }
 
 // Key used by OpenClaw's per-sender tool policy resolver to match
-// vauxr-originated runs. Format is `channel:<channelId>:<senderId>`;
+// vauxr-originated runs. Format is `channel:<agentId>:<senderId>`;
 // wildcard senderId applies to every vauxr device.
 const VAUXR_TOOLS_BY_SENDER_KEY = "channel:vauxr:*";
 

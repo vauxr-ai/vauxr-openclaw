@@ -56,7 +56,7 @@ test('HTTP never follows redirect or forwards auth/body to redirect destination;
 test('WS refuses redirect before channel authentication and never reports connected',async t=>{
   let forwarded=0;
   const destination=await listen(t,http.createServer((req,res)=>{forwarded++;res.end();}));
-  const source=await listen(t,http.createServer((req,res)=>{res.writeHead(302,{Location:destination.replace('http:','ws:')+'/channel'});res.end();}));
+  const source=await listen(t,http.createServer((req,res)=>{res.writeHead(302,{Location:destination.replace('http:','ws:')+'/agent'});res.end();}));
   const h=harness(source);t.after(()=>h.bridge.stop());h.bridge.start();
   await until(()=>h.logs.some(line=>line.includes('connection failed')));
   assert.equal(forwarded,0);assert.equal(h.counts().connected,0);assert.equal(h.state.value,'disconnected');
@@ -64,19 +64,19 @@ test('WS refuses redirect before channel authentication and never reports connec
 
 test('real WS waits for ready, ignores early transcripts, sanitizes frames/errors and clears turns on disconnect',async t=>{
   let socket,gotAuth=false,dispatched=0;
-  const origin=await wsFixture(t,ws=>{socket=ws;ws.on('message',data=>{const frame=JSON.parse(String(data));if(frame.type==='channel.auth')gotAuth=true;});});
+  const origin=await wsFixture(t,ws=>{socket=ws;ws.on('message',data=>{const frame=JSON.parse(String(data));if(frame.type==='agent.auth')gotAuth=true;});});
   const h=harness(origin);t.after(()=>h.bridge.stop());
   h.bridge.dispatchTranscript=async()=>{dispatched++;};
   h.bridge.start();await until(()=>gotAuth);
   assert.equal(h.counts().connected,0);
-  socket.send(JSON.stringify({type:'channel.transcript',deviceId:'dev-test',text:'before-auth'}));
+  socket.send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'before-auth'}));
   await delay(20);assert.equal(dispatched,0);
-  socket.send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));await until(()=>h.counts().connected===1);
+  socket.send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));await until(()=>h.counts().connected===1);
   socket.send('invalid-frame-secret-sentinel');
   socket.send(JSON.stringify({type:'unknown-secret-sentinel',message:'error-secret-sentinel'}));
   socket.send(JSON.stringify({type:'error',code:'unknown-secret-sentinel',message:'error-secret-sentinel'}));
-  socket.send(JSON.stringify({type:'channel.device_state',deviceId:'device-secret-sentinel',state:'state-secret-sentinel'}));
-  socket.send(JSON.stringify({type:'channel.transcript',deviceId:'dev-test',text:'after-auth'}));
+  socket.send(JSON.stringify({type:'agent.device_state',deviceId:'device-secret-sentinel',state:'state-secret-sentinel'}));
+  socket.send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'after-auth'}));
   await until(()=>dispatched===1);
   h.bridge.activeRuns.set('dev-test',{deviceId:'dev-test',protocolRunId:'run'});
   h.bridge.runIdToTurn.set('run',{deviceId:'dev-test',protocolRunId:'run'});
@@ -87,12 +87,12 @@ test('real WS waits for ready, ignores early transcripts, sanitizes frames/error
 
 test('rotation reconnects using replacement and ready gates new connection; revoked stops retries explicitly',async t=>{
   const sockets=[],authorities=[];
-  const origin=await wsFixture(t,ws=>{sockets.push(ws);ws.on('message',data=>{const frame=JSON.parse(String(data));if(frame.type==='channel.auth')authorities.push(frame.token);});});
+  const origin=await wsFixture(t,ws=>{sockets.push(ws);ws.on('message',data=>{const frame=JSON.parse(String(data));if(frame.type==='agent.auth')authorities.push(frame.token);});});
   const h=harness(origin);t.after(()=>h.bridge.stop());h.bridge.start();
-  await until(()=>authorities.length===1);sockets[0].send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));await until(()=>h.state.value==='connected');
+  await until(()=>authorities.length===1);sockets[0].send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));await until(()=>h.state.value==='connected');
   h.rotate();await h.bridge.refresh();await until(()=>authorities.length===2);
   assert.notEqual(authorities[0],authorities[1]);assert.equal(h.state.value,'disconnected');
-  sockets[1].send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));await until(()=>h.counts().connected===2);
+  sockets[1].send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));await until(()=>h.counts().connected===2);
   sockets[1].send(JSON.stringify({type:'error',code:'UNAUTHORIZED',message:'revoked-secret-sentinel'}));await until(()=>h.counts().rejected===1);
   assert.equal(h.state.value,'re_pair_required');assert.equal(h.bridge.started,false);assert.equal(h.bridge.reconnectTimer,null);
   assert.ok(!h.logs.join('\n').includes('secret-sentinel'));
@@ -150,9 +150,9 @@ const authenticated=bridge.authenticated;bridge.stop();console.log(JSON.stringif
 `;
 
 // Equivalent to the exercised contract in server 16968a73b7610c917a9922d94d8c7ef187f7dda3:
-// channel_server.py _handle_auth authenticates the bearer, requires CHANNEL_CONNECT,
-// looks up the principal's registered channel, and derives ready.channelId from it.
-// _handle_authenticated_message requires VOICE_RESPONSE, the active channel and
+// agent_server.py _handle_auth authenticates the bearer, requires AGENT_CONNECT,
+// looks up the principal's registered channel, and derives ready.agentId from it.
+// _handle_authenticated_message requires VOICE_RESPONSE, the active Agent and
 // listener origin, and string deviceId/runId. Lifecycle/revocation is covered by
 // the separate pinned real-server suite, not simulated by this static fixture.
 function validatingChannelFixture(t, server) {
@@ -165,8 +165,8 @@ function validatingChannelFixture(t, server) {
   const channels=new Set(['int_test','int_other']);
   const state={authFrames:0,missingToken:false,ready:[],denials:[],responses:[],warnings:[],closed:0};
   const authenticate=token=>credentials.get(token);
-  const allowed=(principal,operation)=>principal?.role==='integration'&&['channel.connect','voice.respond'].includes(operation);
-  const wss=new WebSocketServer({server,path:'/channel'});
+  const allowed=(principal,operation)=>principal?.role==='integration'&&['agent.connect','voice.respond'].includes(operation);
+  const wss=new WebSocketServer({server,path:'/agent'});
   wss.on('connection',ws=>{
     let principal,channel;
     const deny=code=>{state.denials.push(code);ws.send(JSON.stringify({type:'error',code,message:'Access denied'}));ws.close();};
@@ -176,22 +176,22 @@ function validatingChannelFixture(t, server) {
       try {
         const frame=JSON.parse(String(data));
         if(!principal){
-          assert.equal(frame.type,'channel.auth');state.authFrames++;
+          assert.equal(frame.type,'agent.auth');state.authFrames++;
           state.missingToken=!Object.hasOwn(frame,'token');
           const candidate=authenticate(frame.token);
           if(!candidate){deny('UNAUTHORIZED');return;}
-          if(!allowed(candidate,'channel.connect')||!channels.has(candidate.subject)){deny('FORBIDDEN');return;}
+          if(!allowed(candidate,'agent.connect')||!channels.has(candidate.subject)){deny('FORBIDDEN');return;}
           principal=candidate;channel=principal.subject;state.ready.push(channel);
-          ws.send(JSON.stringify({type:'channel.ready',channelId:channel}));
+          ws.send(JSON.stringify({type:'agent.ready',agentId:channel}));
           // Deliberately queued even for a client with a mismatched local subject:
           // the bridge must reject ready and must not dispatch the following frame.
-          ws.send(JSON.stringify({type:'channel.transcript',deviceId:'tls-device',text:'post-ready'}));
+          ws.send(JSON.stringify({type:'agent.transcript',deviceId:'tls-device',text:'post-ready'}));
           return;
         }
         if(!allowed(principal,'voice.respond')||principal.subject!==channel||channel!=='int_test'){
           deny('FORBIDDEN');return;
         }
-        assert.ok(['channel.response.delta','channel.response.end'].includes(frame.type),'Unexpected response frame');
+        assert.ok(['agent.response.delta','agent.response.end'].includes(frame.type),'Unexpected response frame');
         assert.equal(frame.deviceId,'tls-device'); // listener belongs to int_test
         assert.equal(typeof frame.runId,'string');assert.ok(frame.runId.length>0);
         state.responses.push(frame);
@@ -214,7 +214,7 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
     {label:'expired certificate',certificate:'expired',tls:false},
     {label:'wrong token',token:'tls-invalid-authority',denial:'UNAUTHORIZED'},
     {label:'missing token',token:undefined,denial:'UNAUTHORIZED'},
-    {label:'token without CHANNEL_CONNECT',token:'tls-owner-authority',denial:'FORBIDDEN'},
+    {label:'token without AGENT_CONNECT',token:'tls-owner-authority',denial:'FORBIDDEN'},
     {label:'unregistered channel identity',token:'tls-unregistered-authority',denial:'FORBIDDEN'},
     {label:'authenticated channel differs from local identity',token:'tls-other-authority',identityMismatch:true},
   ];
@@ -245,7 +245,7 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
     assert.equal(actual.connected,expected);
     assert.equal(actual.authenticated,expected);
     assert.equal(actual.processed,expected?1:0);
-    assert.deepEqual(actual.warnings,!tls?['[vauxr-bridge] WebSocket connection failed']:denial?['[vauxr-bridge] Server rejected channel operation']:[]);
+    assert.deepEqual(actual.warnings,!tls?['[vauxr-bridge] WebSocket connection failed']:denial?['[vauxr-bridge] Server rejected Agent operation']:[]);
     assert.deepEqual(state.warnings,[]);
     assert.equal(httpCalls,tls?1:0);assert.equal(state.authFrames,tls?1:0);
     assert.equal(state.missingToken,tls&&token===undefined);
@@ -256,8 +256,8 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
       const [delta,end]=state.responses;
       assert.match(delta.runId,/^[0-9a-f-]{36}$/);
       assert.notEqual(delta.runId,'tls-sdk-run');
-      assert.deepEqual(delta,{type:'channel.response.delta',deviceId:'tls-device',runId:delta.runId,text:'TLS response'});
-      assert.deepEqual(end,{type:'channel.response.end',deviceId:'tls-device',runId:delta.runId});
+      assert.deepEqual(delta,{type:'agent.response.delta',deviceId:'tls-device',runId:delta.runId,text:'TLS response'});
+      assert.deepEqual(end,{type:'agent.response.end',deviceId:'tls-device',runId:delta.runId});
     }else assert.deepEqual(state.responses,[]);
     assert.ok(!JSON.stringify(actual).includes('authority'),'Credential must not appear in logs');
   });
@@ -265,7 +265,7 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
 
 test('origin binding rejects mixed schemes, hosts, URL credentials and strict LAN downgrade',()=>{
   for(const config of [{url:'wss://localhost:8443',httpUrl:'http://localhost:8080'},{url:'ws://localhost:8765',httpUrl:'http://other.invalid:8080'},{url:'ws://user:password@localhost:8765'},{url:'ws://localhost:8765',strictTls:true}])assert.throws(()=>endpoints(config));
-  assert.deepEqual(endpoints({url:'http://localhost:8765'}),{origin:'http://localhost:8080',wsUrl:'ws://localhost:8765/channel'});
+  assert.deepEqual(endpoints({url:'http://localhost:8765'}),{origin:'http://localhost:8080',wsUrl:'ws://localhost:8765/agent'});
 });
 
 test('a retired voice turn cannot send errors through the replacement authenticated socket',async t=>{
@@ -275,10 +275,10 @@ test('a retired voice turn cannot send errors through the replacement authentica
     connections++;
     ws.on('message',data=>{
       const frame=JSON.parse(String(data));
-      if(frame.type==='channel.auth')ws.send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));
+      if(frame.type==='agent.auth')ws.send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));
       else responses.push(frame);
     });
-    if(connections===1)setTimeout(()=>ws.send(JSON.stringify({type:'channel.transcript',deviceId:'dev-test',text:'Start a voice turn'})),15);
+    if(connections===1)setTimeout(()=>ws.send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'Start a voice turn'})),15);
   });
   const h=harness(origin);t.after(()=>h.bridge.stop());
   h.bridge.api.runtime.channel={
@@ -295,7 +295,7 @@ test('a retired voice turn cannot send errors through the replacement authentica
 });
 
 test('ready for another channel cannot mark the integration connected',async t=>{
-  const origin=await wsFixture(t,ws=>ws.on('message',()=>ws.send(JSON.stringify({type:'channel.ready',channelId:'int_someone_else'}))));
+  const origin=await wsFixture(t,ws=>ws.on('message',()=>ws.send(JSON.stringify({type:'agent.ready',agentId:'int_someone_else'}))));
   const h=harness(origin);t.after(()=>h.bridge.stop());h.bridge.start();
   await until(()=>!h.bridge.started);
   assert.equal(h.counts().connected,0);assert.equal(h.state.value,'disconnected');
@@ -309,7 +309,7 @@ for (const replacement of ['stop/start', 'socket close']) {
       sockets.push(ws);
       ws.on('message', data => {
         const frame = JSON.parse(String(data));
-        if (frame.type === 'channel.auth') ws.send(JSON.stringify({type:'channel.ready',channelId:'int_test'}));
+        if (frame.type === 'agent.auth') ws.send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));
         else responses.push(frame);
       });
     });
@@ -331,7 +331,7 @@ for (const replacement of ['stop/start', 'socket close']) {
         },
       },
     };
-    const transcript = () => sockets.at(-1).send(JSON.stringify({type:'channel.transcript',deviceId:'dev-test',text:'Speak'}));
+    const transcript = () => sockets.at(-1).send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'Speak'}));
     const event = (runId,stream,data) => emit({runId,sessionKey:runId === 'new-run' && stream === 'assistant' ? undefined : pending[0].sessionKey,stream,data});
     h.bridge.start();
     await until(() => h.bridge.authenticated);
@@ -364,10 +364,10 @@ for (const replacement of ['stop/start', 'socket close']) {
     event('old-run','assistant',{delta:'after completion'});
     event('new-run','assistant',{delta:'w speaking'});
     event('new-run','lifecycle',{phase:'end'});
-    await until(() => responses.some(frame => frame.type === 'channel.response.end'));
+    await until(() => responses.some(frame => frame.type === 'agent.response.end'));
     assert.deepEqual(responses,[
-      {type:'channel.response.delta',deviceId:'dev-test',runId:active.protocolRunId,text:'NOw speaking'},
-      {type:'channel.response.end',deviceId:'dev-test',runId:active.protocolRunId},
+      {type:'agent.response.delta',deviceId:'dev-test',runId:active.protocolRunId,text:'NOw speaking'},
+      {type:'agent.response.end',deviceId:'dev-test',runId:active.protocolRunId},
     ]);
     pending[1].resolve({});
     await until(() => h.bridge.activeRuns.size === 0);

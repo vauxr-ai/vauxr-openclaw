@@ -27,7 +27,7 @@ export function endpoints(config: { url: string; httpUrl?: string; strictTls?: b
   if (new URL(origin).protocol !== socket.protocol || new URL(origin).hostname !== socket.hostname)
     throw new VauxrError('mixed_server_transport');
   socket.protocol = socket.protocol === 'https:' ? 'wss:' : 'ws:';
-  socket.pathname = '/channel';
+  socket.pathname = '/agent';
   return { origin, wsUrl: socket.href };
 }
 

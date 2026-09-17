@@ -61,13 +61,13 @@ test('authenticated production bridge persists friendly titles through the real 
   const auth={async bearer(){return 'fixture-authority';},subject(){return 'int_fixture';},
     connected(){state='connected';},disconnected(){state='disconnected';},status(){return {state};}};
   const server=http.createServer();
-  const wss=new WebSocketServer({server,path:'/channel'});
+  const wss=new WebSocketServer({server,path:'/agent'});
   wss.on('connection',ws=>{socket=ws;connections++;ws.on('message',bytes=>{
     const frame=JSON.parse(String(bytes));
-    if(frame.type==='channel.auth') {
+    if(frame.type==='agent.auth') {
       assert.equal(frame.token,'fixture-authority');
-      ws.send(JSON.stringify({type:'channel.transcript',deviceId:a,text:'ignored before ready',deviceDisplayName:'Untrusted early title'}));
-      ws.send(JSON.stringify({type:'channel.ready',channelId:'int_fixture'}));
+      ws.send(JSON.stringify({type:'agent.transcript',deviceId:a,text:'ignored before ready',deviceDisplayName:'Untrusted early title'}));
+      ws.send(JSON.stringify({type:'agent.ready',agentId:'int_fixture'}));
     } else responses.push(frame);
   });});
   server.listen(0,'127.0.0.1');await once(server,'listening');
@@ -77,7 +77,7 @@ test('authenticated production bridge persists friendly titles through the real 
   assert.equal(contexts.length,0);
   const send = async (id, extra={}) => {
     const count=completions.length;
-    socket.send(JSON.stringify({type:'channel.transcript',deviceId:id,sessionKey:'vauxr:WRONG',text:'hello',...extra}));
+    socket.send(JSON.stringify({type:'agent.transcript',deviceId:id,sessionKey:'vauxr:WRONG',text:'hello',...extra}));
     await until(()=>completions.length===count+1);
     await Promise.all(metaTasks.splice(0));
     assert.deepEqual(warnings,[]);
@@ -111,14 +111,14 @@ test('authenticated production bridge persists friendly titles through the real 
     const [delta,end]=responses.slice(i*2,i*2+2);
     assert.equal(delta.deviceId,ctx.SenderId);assert.equal(end.deviceId,ctx.SenderId);
     assert.equal(delta.text,`reply-${ctx.SenderId}`);
-    assert.equal(delta.type,'channel.response.delta');assert.equal(end.type,'channel.response.end');
+    assert.equal(delta.type,'agent.response.delta');assert.equal(end.type,'agent.response.end');
     assert.equal(delta.runId,end.runId);assert.ok(!protocolRuns.has(delta.runId));protocolRuns.add(delta.runId);
   }
   // Both duplicate-named devices have active turns at once; finish in reverse
   // order so a label-keyed route or shared correlation slot cannot pass.
   holdDispatch=true;
   const responseStart=responses.length, contextStart=contexts.length;
-  for(const id of [a,b]) socket.send(JSON.stringify({type:'channel.transcript',deviceId:id,text:'overlap',deviceDisplayName:'Shared Room'}));
+  for(const id of [a,b]) socket.send(JSON.stringify({type:'agent.transcript',deviceId:id,text:'overlap',deviceDisplayName:'Shared Room'}));
   await until(()=>held.size===2);
   await Promise.all(metaTasks.splice(0));
   title(a,'Shared Room');title(b,'Shared Room');

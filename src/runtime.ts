@@ -58,7 +58,7 @@ export class VauxrRuntime {
       ? ` Open the owner UI at ${this.origin}, check Connect OpenClaw code ${status.userCode}, and approve before ${new Date(status.expiresAt! * 1000).toISOString()}.`
       : status.state === 're_pair_required' ? ' Owner approval is required again. Use /vauxr pair; revoke the obsolete integration in the owner UI.'
       : status.state === 'storage_error' ? ' Protected credential storage could not be verified. Repair private storage access before continuing.'
-      : status.state === 'connected' ? ' Select this integration as the active channel in the owner UI to route voice.' : '';
+      : status.state === 'connected' ? ' Select this integration as the active Agent in the owner UI to route voice.' : '';
     return `Vauxr: ${status.state}.${instruction}`;
   }
 }
