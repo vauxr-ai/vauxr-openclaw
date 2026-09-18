@@ -22,7 +22,15 @@ export class VauxrRuntime {
     this.bridge = new VauxrBridge(api, config, this.auth);
   }
   isOwnedBy(api: OpenClawPluginApi): boolean { return this.api === api; }
-  start() { if (this.running) return; this.running = true; void this.cycle(); }
+  start() {
+    // OpenClaw's health monitor can invoke startAccount after a bridge-level
+    // rejection. The runtime remains alive in that case, while Bridge.stop()
+    // has retired its socket; resume the bridge instead of treating this as a
+    // no-op that leaves the channel permanently disconnected.
+    if (this.running) { void this.bridge.refresh(); return; }
+    this.running = true;
+    void this.cycle();
+  }
   stop() { this.running = false; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.bridge.stop(); }
   private async cycle() {
     if (!this.running) return;
