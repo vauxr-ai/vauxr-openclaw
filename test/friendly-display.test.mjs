@@ -8,9 +8,9 @@ import { WebSocketServer } from 'ws';
 import { runChannelInboundEvent } from 'openclaw/plugin-sdk/channel-inbound';
 import { recordInboundSession } from 'openclaw/plugin-sdk/conversation-runtime';
 import { resolveStorePath, upsertSessionEntry, getSessionEntry, loadSessionStore, sessionDeliveryOrigin } from 'openclaw/plugin-sdk/session-store-runtime';
-// Test-only probe of the pinned 2026.9.3 gateway's actual sidebar projection.
+// Test-only probe of the pinned 2026.9.4 gateway's actual sidebar projection.
 // Production uses only the public MsgContext / inbound / session SDK contracts.
-import { l as resolveGatewaySessionDisplayName } from '../node_modules/openclaw/dist/session-utils-list-Bk28ume-.mjs';
+import { l as resolveGatewaySessionDisplayName } from '../node_modules/openclaw/dist/session-utils-list-RGkE30m3.mjs';
 import { VauxrBridge } from '../dist/src/bridge.js';
 
 const key = id => `agent:assistant:vauxr:${id}`;
@@ -85,7 +85,7 @@ test('authenticated production bridge persists friendly titles through the real 
   const title = (id, expected) => {
     const row=entry(id);
     assert.equal(sessionDeliveryOrigin(row).label,expected);
-    assert.equal(resolveGatewaySessionDisplayName(key(id),row),expected);
+    assert.equal(resolveGatewaySessionDisplayName(key(id),row),expected === id ? undefined : expected);
     assert.equal(row.sessionId,original.get(id).sessionId);
     assert.equal(row.sessionFile,original.get(id).sessionFile);
     assert.equal(sessionDeliveryOrigin(row).from,id);

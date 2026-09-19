@@ -1,3 +1,4 @@
+import { voiceContext } from "./voice_context.js";
 import { RealtimeConversations } from "./realtime.js";
 import WebSocket from "ws";
 import { endpoints } from "./transport.js";
@@ -249,10 +250,10 @@ export class VauxrBridge {
         const previous = this.realtimeTails.get(deviceId) ?? Promise.resolve();
         work = previous.catch(() => undefined).then(async () => {
           this.conversations ??= new RealtimeConversations(this.api.config, resolveTargetAgentId(this.api.config));
-          if (operation === "bootstrap") return this.conversations.bootstrap(deviceId, session);
+          if (operation === "bootstrap") return this.conversations.bootstrap(deviceId, session, frame.deviceDisplayName);
           if (operation === "release") return this.conversations.release(deviceId, session);
           this.conversations.scope(deviceId, session);
-          if (operation === "record") return this.conversations.record(deviceId, session, payload.fragments as never);
+          if (operation === "record") return this.conversations.record(deviceId, session, payload.fragments as never, frame.deviceDisplayName);
           if (operation === "consult") {
             if (typeof payload.request !== "string" || payload.request.length > 32000) throw new Error("Invalid consultation");
             if (this.activeRuns.has(deviceId)) throw new Error("A backend turn is already running");
@@ -263,7 +264,7 @@ export class VauxrBridge {
               "Realtime voice consultation. Use the recorded conversation for context. " +
               "Resolve only the latest outstanding request, do not repeat completed actions. " +
               "Return results to the voice assistant; do not announce or send another reply.\n" + payload.request,
-              undefined, delta => { text += delta; });
+              frame.deviceDisplayName, delta => { text += delta; });
             return { text };
           }
           throw new Error("Unsupported realtime operation");
@@ -288,7 +289,8 @@ export class VauxrBridge {
     // string we pass — so we have to build the full form ourselves to
     // preserve session continuity with prior turns / restarts.
     const agentId = resolveTargetAgentId(cfg);
-    const sessionKey = `agent:${agentId}:vauxr:${deviceId}`;
+    const identity = voiceContext(agentId, deviceId, deviceDisplayName);
+    const sessionKey = identity.SessionKey!;
     // Protocol-level runId sent to vauxr-ws in response frames so it can
     // correlate delta/end/error chunks back to this transcript.
     const protocolRunId = crypto.randomUUID();
@@ -307,14 +309,7 @@ export class VauxrBridge {
     const ctxPayload = {
       Body: text,
       BodyForAgent: text,
-      From: deviceId,
-      SenderId: deviceId,
-      SenderName: deviceId,
-      ConversationLabel: friendlyDeviceTitle(deviceDisplayName) ?? deviceId,
-      SessionKey: sessionKey,
-      Provider: "vauxr",
-      Surface: "vauxr",
-      Timestamp: Date.now(),
+      ...identity,
     } satisfies MsgContext;
 
     try {
@@ -516,14 +511,6 @@ export class VauxrBridge {
       this.ws.send(JSON.stringify(frame));
     }
   }
-}
-
-// Reject malformed display metadata rather than coercing objects or rendering
-// control/bidi characters. Raw legacy `name` / hello labels are not authoritative.
-function friendlyDeviceTitle(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length > 128) return undefined;
-  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(value)) return undefined;
-  return value.trim() || undefined;
 }
 
 /**

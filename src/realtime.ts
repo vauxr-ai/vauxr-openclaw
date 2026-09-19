@@ -1,6 +1,7 @@
+import { voiceContext } from "./voice_context.js";
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { getSessionEntry, upsertSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import { getSessionEntry, upsertSessionEntry, resolveStorePath, recordSessionMetaFromInbound } from "openclaw/plugin-sdk/session-store-runtime";
 // OpenClaw 2026.9.3 exports these runtime modules without declaration files.
 // @ts-expect-error verified runtime export in pinned SDK
 import { resolveRealtimeBootstrapContextInstructions } from "openclaw/plugin-sdk/realtime-bootstrap-context";
@@ -15,9 +16,10 @@ export class RealtimeConversations {
   private sessions = new Map<string, Scope>();
   constructor(private config: OpenClawConfig, private agentId: string) {}
 
-  async bootstrap(deviceId: string, session: string) {
+  async bootstrap(deviceId: string, session: string, displayName?: unknown) {
     if (this.sessions.size >= 128) throw new Error("Too many realtime sessions; reconnect the integration");
-    const sessionKey = `agent:${this.agentId}:vauxr:${deviceId}`;
+    const ctx = voiceContext(this.agentId, deviceId, displayName);
+    const sessionKey = ctx.SessionKey!;
     const storePath = resolveStorePath(this.config.session?.store, { agentId: this.agentId });
     let row = getSessionEntry({ storePath, sessionKey });
     if (!row?.sessionId) {
@@ -26,6 +28,7 @@ export class RealtimeConversations {
     }
     if (!row?.sessionId) throw new Error("Backend session could not be created");
     const scope = { agentId: this.agentId, sessionKey, sessionId: row.sessionId, storePath };
+    await recordSessionMetaFromInbound({ storePath, sessionKey, ctx, createIfMissing: false });
     this.sessions.set(`${deviceId}:${session}`, scope);
     const instructions = await resolveRealtimeBootstrapContextInstructions({ config: this.config, ...scope });
     const entries = await readVisibleSessionTranscriptMessageEntries(scope);
@@ -61,7 +64,7 @@ export class RealtimeConversations {
     return { released: true };
   }
 
-  async record(deviceId: string, session: string, fragments: Fragment[]) {
+  async record(deviceId: string, session: string, fragments: Fragment[], displayName?: unknown) {
     const scope = this.scope(deviceId, session);
     if (!Array.isArray(fragments) || fragments.length > 64) throw new Error("Invalid transcript batch");
     const messages = fragments.map(f => {
@@ -78,6 +81,8 @@ export class RealtimeConversations {
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } : {}),
       } };
     });
+    await recordSessionMetaFromInbound({ ...scope,
+      ctx: voiceContext(this.agentId, deviceId, displayName), createIfMissing: false });
     await appendSessionTranscriptMessagesByIdentity({ ...scope, config: this.config, messages });
     return { recorded: fragments.length };
   }
