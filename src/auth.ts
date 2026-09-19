@@ -218,7 +218,10 @@ export class VauxrAuth {
   }
   connected() {
     if (!this.#rejected && this.#record?.credential && !this.#record.terminal && !this.#record.enrollmentAck &&
-      ['connecting', 'disconnected', 'connected'].includes(this.#status.state)) this.state('connected');
+      // A valid agent.ready proves transport recovery even if the HTTP poll
+      // failed during restart. Storage/rotation/revocation remain fail-closed.
+      !this.#record.rotation &&
+      ['connecting', 'disconnected', 'connected', 'transport_error'].includes(this.#status.state)) this.state('connected');
   }
   subject(): string | undefined { return this.#record?.subject; }
   disconnected() { if (this.#status.state === 'connected') this.state('disconnected'); }
