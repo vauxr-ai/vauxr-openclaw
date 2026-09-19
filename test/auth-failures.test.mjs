@@ -28,7 +28,7 @@ async function fixture(t, deliverGate) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  const wsUrl = origin.replace('http:', 'ws:') + '/channel';
+  const wsUrl = origin.replace('http:', 'ws:') + '/agent';
   const initial = { version: 1, origin, wsUrl, subject, credential: oldCredential };
   return { origin, wsUrl, initial, acknowledgments: () => acknowledgments };
 }
@@ -58,7 +58,7 @@ test('uncertain atomic publication must be durably recommitted before ACK on ret
   });
 });
 
-test('a late channel.ready must not erase storage_error or enable credential use', async t => {
+test('a late agent.ready must not erase storage_error or enable credential use', async t => {
   const f = await fixture(t);
   const auth = new VauxrAuth(f.origin, f.wsUrl, {
     async read() { return structuredClone(f.initial); },
@@ -94,11 +94,11 @@ test('revocation during a lifecycle delivery cannot be overwritten by its stale 
 
 // The emitted bridge methods are callable for deterministic event-race tests.
 const { VauxrBridge } = await import('../dist/src/bridge.js');
-test('channel.ready cannot enable dispatch after auth refuses the connected transition', () => {
+test('agent.ready cannot enable dispatch after auth refuses the connected transition', () => {
   const auth = { subject: () => subject, status: () => ({ state: 'storage_error' }), connected() {}, disconnected() {} };
   const bridge = new VauxrBridge({ logger: { debug() {}, warn() {} } }, { url: 'http://127.0.0.1:8080' }, auth);
   bridge.started = true;
-  bridge.handleFrame({ type: 'channel.ready', channelId: subject });
+  bridge.handleFrame({ type: 'agent.ready', agentId: subject });
   assert.equal(bridge.authenticated, false);
 });
 

@@ -104,7 +104,7 @@ async def control(request):
             return web.json_response({"state": result["state"]})
         if action in ("rotate", "revoke"):
             row = next(row for row in app[INTEGRATION].execute("list", {}, owner)["requests"] if row["state"] == "completed")
-            result = app[LIFECYCLE].execute(action, {"operation_id": secrets.token_hex(16), "role": "integration", "subject": row["channel_id"]}, owner)
+            result = app[LIFECYCLE].execute(action, {"operation_id": secrets.token_hex(16), "role": "integration", "subject": row["agent_id"]}, owner)
             return web.json_response({"state": result["state"]})
         if action == "restart":
             store = services()

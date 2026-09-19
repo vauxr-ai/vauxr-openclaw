@@ -1,3 +1,5 @@
+import { voiceContext } from "./voice_context.js";
+import { RealtimeConversations } from "./realtime.js";
 import WebSocket from "ws";
 import { endpoints } from "./transport.js";
 import type { VauxrAuth } from "./auth.js";
@@ -6,7 +8,11 @@ import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 
 /** Vauxr protocol frames sent by vauxr to the channel plugin */
 interface VauxrInboundFrame {
-  type: "channel.transcript" | "channel.device_state" | "channel.ready" | "error";
+  type: "agent.realtime.request" | "agent.transcript" | "agent.device_state" | "agent.ready" | "error";
+  requestId?: string;
+  session?: string;
+  operation?: string;
+  payload?: Record<string, unknown>;
   deviceId?: string;
   text?: string;
   state?: string;
@@ -15,15 +21,16 @@ interface VauxrInboundFrame {
   deviceDisplayName?: unknown;
   code?: string;
   message?: string;
-  channelId?: string;
+  agentId?: string;
 }
 
 /** Vauxr protocol frames sent by the channel plugin to vauxr */
 type VauxrOutboundFrame =
-  | { type: "channel.auth"; token: string }
-  | { type: "channel.response.delta"; deviceId: string; runId: string; text: string }
-  | { type: "channel.response.end"; deviceId: string; runId: string }
-  | { type: "channel.response.error"; deviceId: string; runId: string; message: string };
+  | { type: "agent.realtime.result"; requestId: string; deviceId: string; result?: unknown; error?: string }
+  | { type: "agent.auth"; token: string }
+  | { type: "agent.response.delta"; deviceId: string; runId: string; text: string }
+  | { type: "agent.response.end"; deviceId: string; runId: string }
+  | { type: "agent.response.error"; deviceId: string; runId: string; message: string };
 
 interface VauxrBridgeConfig {
   url: string;
@@ -35,12 +42,17 @@ interface VauxrBridgeConfig {
 interface ActiveVauxrTurn {
   deviceId: string;
   protocolRunId: string;
+  collect?: (text: string) => void;
+  error?: boolean;
 }
 
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;
 
 export class VauxrBridge {
+  private conversations?: RealtimeConversations;
+  private realtimeRequests = new Map<string, Promise<unknown>>();
+  private realtimeTails = new Map<string, Promise<unknown>>();
   private ws: WebSocket | null = null;
   private reconnectMs = INITIAL_RECONNECT_MS;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -135,7 +147,7 @@ export class VauxrBridge {
       this.reconnectMs = INITIAL_RECONNECT_MS;
 
       if (this.ws !== ws || !this.started) return;
-      ws.send(JSON.stringify({ type: "channel.auth", token }));
+      ws.send(JSON.stringify({ type: "agent.auth", token }));
     });
 
     ws.on("message", (data) => {
@@ -182,9 +194,12 @@ export class VauxrBridge {
 
   private handleFrame(frame: VauxrInboundFrame): void {
     if (!frame || typeof frame !== "object") return;
-    if (!this.authenticated && !["channel.ready", "error"].includes(frame.type)) return;
+    if (!this.authenticated && !["agent.ready", "error"].includes(frame.type)) return;
     switch (frame.type) {
-      case "channel.transcript":
+      case "agent.realtime.request":
+        void this.handleRealtime(frame);
+        break;
+      case "agent.transcript":
         if (frame.deviceId && frame.text && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
@@ -197,18 +212,18 @@ export class VauxrBridge {
           );
         }
         break;
-      case "channel.device_state":
+      case "agent.device_state":
         // Device metadata is untrusted; do not mirror payloads into logs.
         break;
-      case "channel.ready":
-        if (frame.channelId !== this.auth?.subject()) { this.stop(); return; }
+      case "agent.ready":
+        if (frame.agentId !== this.auth?.subject()) { this.stop(); return; }
         this.auth?.connected();
         if (this.auth?.status().state !== 'connected') { this.stop(); return; }
         this.authenticated = true;
-        this.api.logger.debug?.("[vauxr-bridge] Channel authenticated");
+        this.api.logger.debug?.("[vauxr-bridge] Agent authenticated");
         break;
       case "error":
-        this.api.logger.warn("[vauxr-bridge] Server rejected channel operation");
+        this.api.logger.warn("[vauxr-bridge] Server rejected Agent operation");
         if (frame.code === "UNAUTHORIZED") {
           this.stop();
           // The old socket may be retired by a just-committed rotation ACK.
@@ -223,7 +238,49 @@ export class VauxrBridge {
     }
   }
 
-  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown): Promise<void> {
+  private async handleRealtime(frame: VauxrInboundFrame): Promise<void> {
+    const { requestId, deviceId, session, operation, payload = {} } = frame;
+    if (!requestId || !deviceId || !session || !/^[a-zA-Z0-9_-]{1,100}$/.test(session)) return;
+    const key = `${deviceId}:${session}:${requestId}`;
+    const socket = this.ws;
+    try {
+      let work = this.realtimeRequests.get(key);
+      if (!work) {
+        if (this.realtimeRequests.size >= 4096) throw new Error("Realtime request capacity reached; reconnect integration");
+        const previous = this.realtimeTails.get(deviceId) ?? Promise.resolve();
+        work = previous.catch(() => undefined).then(async () => {
+          this.conversations ??= new RealtimeConversations(this.api.config, resolveTargetAgentId(this.api.config));
+          if (operation === "bootstrap") return this.conversations.bootstrap(deviceId, session, frame.deviceDisplayName);
+          if (operation === "release") return this.conversations.release(deviceId, session);
+          this.conversations.scope(deviceId, session);
+          if (operation === "record") return this.conversations.record(deviceId, session, payload.fragments as never, frame.deviceDisplayName);
+          if (operation === "consult") {
+            if (typeof payload.request !== "string" || payload.request.length > 32000) throw new Error("Invalid consultation");
+            if (this.activeRuns.has(deviceId)) throw new Error("A backend turn is already running");
+            let text = "";
+            // This is a new consultation, not replay of prior turns. Full voice
+            // history was recorded without dispatch. Only this request runs tools.
+            await this.dispatchTranscript(deviceId,
+              "Realtime voice consultation. Use the recorded conversation for context. " +
+              "Resolve only the latest outstanding request, do not repeat completed actions. " +
+              "Return results to the voice assistant; do not announce or send another reply.\n" + payload.request,
+              frame.deviceDisplayName, delta => { text += delta; });
+            return { text };
+          }
+          throw new Error("Unsupported realtime operation");
+        });
+        this.realtimeRequests.set(key, work);
+        if (operation !== "consult") this.realtimeTails.set(deviceId, work);
+      }
+      const result = await work;
+      if (this.ws === socket && this.authenticated) this.send({ type: "agent.realtime.result", requestId, deviceId, result });
+    } catch {
+      if (this.ws === socket && this.authenticated) this.send({ type: "agent.realtime.result", requestId, deviceId,
+        error: "Backend realtime operation failed; an action may still be running. Check the backend before retrying." });
+    }
+  }
+
+  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown, collect?: (text: string) => void): Promise<void> {
     const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
     // Construct the sessionKey in the same form the old subagent.run path
     // ended up producing after openclaw's internal normalization
@@ -232,7 +289,8 @@ export class VauxrBridge {
     // string we pass — so we have to build the full form ourselves to
     // preserve session continuity with prior turns / restarts.
     const agentId = resolveTargetAgentId(cfg);
-    const sessionKey = `agent:${agentId}:vauxr:${deviceId}`;
+    const identity = voiceContext(agentId, deviceId, deviceDisplayName);
+    const sessionKey = identity.SessionKey!;
     // Protocol-level runId sent to vauxr-ws in response frames so it can
     // correlate delta/end/error chunks back to this transcript.
     const protocolRunId = crypto.randomUUID();
@@ -243,7 +301,7 @@ export class VauxrBridge {
 
     // Register before dispatch so onAgentEvent can correlate any event the
     // agent runtime emits for this turn back to the originating device.
-    const activeTurn = { deviceId, protocolRunId };
+    const activeTurn: ActiveVauxrTurn = { deviceId, protocolRunId, collect };
     this.activeRuns.set(deviceId, activeTurn);
 
     // Minimal inbound context. Voice channels don't carry replies, media,
@@ -251,14 +309,7 @@ export class VauxrBridge {
     const ctxPayload = {
       Body: text,
       BodyForAgent: text,
-      From: deviceId,
-      SenderId: deviceId,
-      SenderName: deviceId,
-      ConversationLabel: friendlyDeviceTitle(deviceDisplayName) ?? deviceId,
-      SessionKey: sessionKey,
-      Provider: "vauxr",
-      Surface: "vauxr",
-      Timestamp: Date.now(),
+      ...identity,
     } satisfies MsgContext;
 
     try {
@@ -333,11 +384,12 @@ export class VauxrBridge {
             runDispatchLifecycle: {
               turnAdoptionLifecycle: undefined,
               onDispatchSkipped: (reason: unknown) => {
+                if (collect) { activeTurn.error = true; return; }
                 this.api.logger.warn(
                   "[vauxr-bridge] Dispatch skipped",
                 );
                 this.send({
-                  type: "channel.response.error",
+                  type: "agent.response.error",
                   deviceId,
                   runId: protocolRunId,
                   message: "Dispatch skipped",
@@ -347,12 +399,14 @@ export class VauxrBridge {
           }),
         },
       });
+      if (collect && activeTurn.error) throw new Error("Backend consultation failed");
     } catch (err) {
       this.api.logger.warn(
         "[vauxr-bridge] Transcript dispatch failed",
       );
+      if (collect) throw err;
       this.send({
-        type: "channel.response.error",
+        type: "agent.response.error",
         deviceId,
         runId: protocolRunId,
         message: "Transcript dispatch failed",
@@ -378,6 +432,11 @@ export class VauxrBridge {
       // starts/events from a retired turn cannot latch onto its replacement.
       const active = this.runIdToTurn.get(event.runId);
       if (!active || this.activeRuns.get(active.deviceId) !== active) return;
+      if (active.collect) {
+        if (event.stream === "assistant" && typeof event.data["delta"] === "string") active.collect(event.data["delta"]);
+        if (event.stream === "error") active.error = true;
+        return;
+      }
       const { deviceId, protocolRunId: runId } = active;
 
       if (event.stream === "assistant") {
@@ -393,7 +452,7 @@ export class VauxrBridge {
         const mode = this.sentinelMode.get(deviceId);
         if (mode === "suppressed") return;
         if (mode === "passthrough") {
-          this.send({ type: "channel.response.delta", deviceId, runId, text: delta });
+          this.send({ type: "agent.response.delta", deviceId, runId, text: delta });
           return;
         }
 
@@ -418,7 +477,7 @@ export class VauxrBridge {
         // the rest of the run.
         this.sentinelMode.set(deviceId, "passthrough");
         this.sentinelBuffer.delete(deviceId);
-        this.send({ type: "channel.response.delta", deviceId, runId, text: buffered });
+        this.send({ type: "agent.response.delta", deviceId, runId, text: buffered });
       }
 
       // Signal end-of-turn to vauxr-ws so TTS finalizes. dispatchTranscript's
@@ -426,7 +485,7 @@ export class VauxrBridge {
       // clean up here to avoid racing that path.
       if (event.stream === "lifecycle" && event.data["phase"] === "end") {
         this.send({
-          type: "channel.response.end",
+          type: "agent.response.end",
           deviceId,
           runId,
         });
@@ -437,7 +496,7 @@ export class VauxrBridge {
           "[vauxr-bridge] Agent error",
         );
         this.send({
-          type: "channel.response.error",
+          type: "agent.response.error",
           deviceId,
           runId,
           message: "Agent error",
@@ -452,14 +511,6 @@ export class VauxrBridge {
       this.ws.send(JSON.stringify(frame));
     }
   }
-}
-
-// Reject malformed display metadata rather than coercing objects or rendering
-// control/bidi characters. Raw legacy `name` / hello labels are not authoritative.
-function friendlyDeviceTitle(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length > 128) return undefined;
-  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(value)) return undefined;
-  return value.trim() || undefined;
 }
 
 /**
