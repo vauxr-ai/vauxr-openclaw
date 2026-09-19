@@ -9,7 +9,7 @@ import { VauxrAuth } from '../dist/src/auth.js';
 import { createProtectedStore } from '../dist/src/secret-store.js';
 import { requestJson } from '../dist/src/transport.js';
 
-const HEAD = '16968a73b7610c917a9922d94d8c7ef187f7dda3';
+const HEAD = '4155222a24316478675e54764cd7fed73fa04145';
 const source = process.env.VAUXR_CONTRACT_SOURCE;
 // This suite is explicit, never silently substitutes mocks when source is absent.
 test('real versioned server enrollment and lifecycle contracts', { skip: source ? false : 'Set VAUXR_CONTRACT_SOURCE to the reviewed server checkout' }, async t => {
@@ -34,7 +34,7 @@ test('real versioned server enrollment and lifecycle contracts', { skip: source 
   });
   assert.equal(ready.head, HEAD);
   const origin = ready.origin;
-  const ws = origin.replace('http:', 'ws:') + '/channel';
+  const ws = origin.replace('http:', 'ws:') + '/agent';
   let offset = 0;
   const now = () => Date.now() / 1000 + offset;
   const control = (action, extra = {}) => requestJson(origin, '/api/fixture/control', { action, ...extra });
@@ -44,7 +44,7 @@ test('real versioned server enrollment and lifecycle contracts', { skip: source 
   const storage = () => createProtectedStore(data, `contract-case-${storeIndex++}`);
   const connect = async auth => {
     const policy = await requestJson(origin, '/api/fixture/policy', {}, await auth.bearer());
-    assert.equal(policy['channel.connect'], true);
+    assert.equal(policy['agent.connect'], true);
     auth.connected();
     assert.equal(auth.status().state, 'connected');
     return policy;

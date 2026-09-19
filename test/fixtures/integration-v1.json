@@ -1,7 +1,7 @@
 {
   "version": 1,
   "endpoint": "/api/integrations/v1/{action}",
-  "public_fields": ["version", "request_id", "server_id", "origin", "channel_id", "display_name", "expires_at", "state"],
+  "public_fields": ["version", "request_id", "server_id", "origin", "agent_id", "display_name", "expires_at", "state"],
   "request_only_fields": ["user_code"],
   "delivery_only_fields": ["credential", "credential_id", "save_required"],
   "requests": {

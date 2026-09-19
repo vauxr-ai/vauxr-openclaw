@@ -22,7 +22,15 @@ export class VauxrRuntime {
     this.bridge = new VauxrBridge(api, config, this.auth);
   }
   isOwnedBy(api: OpenClawPluginApi): boolean { return this.api === api; }
-  start() { if (this.running) return; this.running = true; void this.cycle(); }
+  start() {
+    // OpenClaw's health monitor can invoke startAccount after a bridge-level
+    // rejection. The runtime remains alive in that case, while Bridge.stop()
+    // has retired its socket; resume the bridge instead of treating this as a
+    // no-op that leaves the channel permanently disconnected.
+    if (this.running) { void this.bridge.refresh(); return; }
+    this.running = true;
+    void this.cycle();
+  }
   stop() { this.running = false; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.bridge.stop(); }
   private async cycle() {
     if (!this.running) return;
@@ -58,7 +66,7 @@ export class VauxrRuntime {
       ? ` Open the owner UI at ${this.origin}, check Connect OpenClaw code ${status.userCode}, and approve before ${new Date(status.expiresAt! * 1000).toISOString()}.`
       : status.state === 're_pair_required' ? ' Owner approval is required again. Use /vauxr pair; revoke the obsolete integration in the owner UI.'
       : status.state === 'storage_error' ? ' Protected credential storage could not be verified. Repair private storage access before continuing.'
-      : status.state === 'connected' ? ' Select this integration as the active channel in the owner UI to route voice.' : '';
+      : status.state === 'connected' ? ' Select this integration as the active Agent in the owner UI to route voice.' : '';
     return `Vauxr: ${status.state}.${instruction}`;
   }
 }

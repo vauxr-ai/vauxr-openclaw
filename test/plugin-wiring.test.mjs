@@ -3,6 +3,7 @@ import test from 'node:test';
 import { existsSync, readFileSync } from 'node:fs';
 import entry from '../dist/index.js';
 import { vauxrPlugin } from '../dist/src/channel.js';
+import { VauxrRuntime } from '../dist/src/runtime.js';
 
 const config = () => ({ channels: { vauxr: { url: 'http://127.0.0.1:1', voiceSystemPrompt: 'Custom voice prompt',
   targetAgent: 'assistant', alsoAllow: ['custom_tool'], otaPublicBase: 'http://127.0.0.1:1' } },
@@ -90,4 +91,15 @@ test('gateway publishes actual states and abort stops service without status cre
   assert.equal(stopped, 1); assert.equal(states.at(-1).running, false);
   assert.equal(JSON.stringify(states).includes('ABCD1234'), false);
   delete globalThis.__vauxrRuntime;
+});
+
+test('health-monitor restart resumes a retired bridge without re-pairing', async () => {
+  const runtime = new VauxrRuntime({ runtime: { state: { resolveStateDir: () => '/tmp/vauxr-runtime-recovery' } } },
+    { url: 'https://vauxr.example.test' });
+  let refreshes = 0;
+  runtime.running = true;
+  runtime.bridge = { refresh: async () => { refreshes++; } };
+  runtime.start();
+  await Promise.resolve();
+  assert.equal(refreshes, 1);
 });

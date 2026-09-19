@@ -76,7 +76,7 @@ export class VauxrAuth {
   private checkIntegration(row: Wire) {
     const r = this.#record!, p = r.pending!;
     if (row.version !== 1 || row.request_id !== p.request_id || row.origin !== this.origin ||
-      row.channel_id !== `int_${p.request_id}` || row.expires_at !== p.expires_at ||
+      row.agent_id !== `int_${p.request_id}` || row.expires_at !== p.expires_at ||
       row.display_name !== p.display_name || !hex(row.server_id) || (r.serverId && row.server_id !== r.serverId)) throw invalid();
     return row;
   }
@@ -149,7 +149,7 @@ export class VauxrAuth {
       }
     }
     this.checkIntegration(row);
-    if (!r.serverId) await this.save({ ...r, serverId: row.server_id as string, subject: row.channel_id as string });
+    if (!r.serverId) await this.save({ ...r, serverId: row.server_id as string, subject: row.agent_id as string });
     const terminal = ({ denied: 'denied', cancelled: 'cancelled', failed: 'failed', expired: 'expired', stale: 're_pair_required', revoked: 're_pair_required' } as Record<string, AuthState>)[String(row.state)];
     if (terminal) { await this.terminal(terminal); return; }
     if (row.state === 'pending') {
@@ -218,7 +218,10 @@ export class VauxrAuth {
   }
   connected() {
     if (!this.#rejected && this.#record?.credential && !this.#record.terminal && !this.#record.enrollmentAck &&
-      ['connecting', 'disconnected', 'connected'].includes(this.#status.state)) this.state('connected');
+      // A valid agent.ready proves transport recovery even if the HTTP poll
+      // failed during restart. Storage/rotation/revocation remain fail-closed.
+      !this.#record.rotation &&
+      ['connecting', 'disconnected', 'connected', 'transport_error'].includes(this.#status.state)) this.state('connected');
   }
   subject(): string | undefined { return this.#record?.subject; }
   disconnected() { if (this.#status.state === 'connected') this.state('disconnected'); }
