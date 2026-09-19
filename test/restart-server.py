@@ -28,7 +28,7 @@ async def main():
     bridge = AgentServer()
     app = web.Application()
 
-    async def channel(request):
+    async def agent_socket(request):
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         await bridge.handle_connection(ws)
@@ -40,7 +40,7 @@ async def main():
         return web.json_response(lifecycle.execute('poll', await request.json(),
             lambda: get_store().authenticate(token)))
 
-    app.router.add_get('/agent', channel)
+    app.router.add_get('/agent', agent_socket)
     app.router.add_post('/api/lifecycle/v1/poll', poll)
     runner = web.AppRunner(app)
     await runner.setup()

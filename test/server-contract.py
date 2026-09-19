@@ -15,7 +15,7 @@ import sys
 import time
 import traceback
 
-HEAD = "16968a73b7610c917a9922d94d8c7ef187f7dda3"
+HEAD = "4155222a24316478675e54764cd7fed73fa04145"
 source = Path(os.environ["VAUXR_CONTRACT_SOURCE"])
 assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == HEAD
 sys.path.insert(0, str(source / "src"))

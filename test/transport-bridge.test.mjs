@@ -53,7 +53,7 @@ test('HTTP never follows redirect or forwards auth/body to redirect destination;
   assert.equal(forwarded,0);
 });
 
-test('WS refuses redirect before channel authentication and never reports connected',async t=>{
+test('WS refuses redirect before agent authentication and never reports connected',async t=>{
   let forwarded=0;
   const destination=await listen(t,http.createServer((req,res)=>{forwarded++;res.end();}));
   const source=await listen(t,http.createServer((req,res)=>{res.writeHead(302,{Location:destination.replace('http:','ws:')+'/agent'});res.end();}));
@@ -149,26 +149,26 @@ assert.ok(processed===1||!bridge.started||logs.some(x=>x.includes('connection fa
 const authenticated=bridge.authenticated;bridge.stop();console.log(JSON.stringify({http,connected,authenticated,processed,logs,warnings}));
 `;
 
-// Equivalent to the exercised contract in server 16968a73b7610c917a9922d94d8c7ef187f7dda3:
+// Equivalent to the exercised contract in server 4155222a24316478675e54764cd7fed73fa04145:
 // agent_server.py _handle_auth authenticates the bearer, requires AGENT_CONNECT,
-// looks up the principal's registered channel, and derives ready.agentId from it.
+// looks up the principal's registered agent, and derives ready.agentId from it.
 // _handle_authenticated_message requires VOICE_RESPONSE, the active Agent and
 // listener origin, and string deviceId/runId. Lifecycle/revocation is covered by
 // the separate pinned real-server suite, not simulated by this static fixture.
-function validatingChannelFixture(t, server) {
+function validatingAgentFixture(t, server) {
   const credentials=new Map([
     ['tls-test-authority',{role:'integration',subject:'int_test'}],
     ['tls-other-authority',{role:'integration',subject:'int_other'}],
     ['tls-unregistered-authority',{role:'integration',subject:'int_unregistered'}],
     ['tls-owner-authority',{role:'owner',subject:'int_test'}],
   ]);
-  const channels=new Set(['int_test','int_other']);
+  const agents=new Set(['int_test','int_other']);
   const state={authFrames:0,missingToken:false,ready:[],denials:[],responses:[],warnings:[],closed:0};
   const authenticate=token=>credentials.get(token);
   const allowed=(principal,operation)=>principal?.role==='integration'&&['agent.connect','voice.respond'].includes(operation);
   const wss=new WebSocketServer({server,path:'/agent'});
   wss.on('connection',ws=>{
-    let principal,channel;
+    let principal,agent;
     const deny=code=>{state.denials.push(code);ws.send(JSON.stringify({type:'error',code,message:'Access denied'}));ws.close();};
     ws.on('close',()=>state.closed++);
     ws.on('error',()=>state.warnings.push('Unexpected fixture socket error'));
@@ -180,15 +180,15 @@ function validatingChannelFixture(t, server) {
           state.missingToken=!Object.hasOwn(frame,'token');
           const candidate=authenticate(frame.token);
           if(!candidate){deny('UNAUTHORIZED');return;}
-          if(!allowed(candidate,'agent.connect')||!channels.has(candidate.subject)){deny('FORBIDDEN');return;}
-          principal=candidate;channel=principal.subject;state.ready.push(channel);
-          ws.send(JSON.stringify({type:'agent.ready',agentId:channel}));
+          if(!allowed(candidate,'agent.connect')||!agents.has(candidate.subject)){deny('FORBIDDEN');return;}
+          principal=candidate;agent=principal.subject;state.ready.push(agent);
+          ws.send(JSON.stringify({type:'agent.ready',agentId:agent}));
           // Deliberately queued even for a client with a mismatched local subject:
           // the bridge must reject ready and must not dispatch the following frame.
           ws.send(JSON.stringify({type:'agent.transcript',deviceId:'tls-device',text:'post-ready'}));
           return;
         }
-        if(!allowed(principal,'voice.respond')||principal.subject!==channel||channel!=='int_test'){
+        if(!allowed(principal,'voice.respond')||principal.subject!==agent||agent!=='int_test'){
           deny('FORBIDDEN');return;
         }
         assert.ok(['agent.response.delta','agent.response.end'].includes(frame.type),'Unexpected response frame');
@@ -205,7 +205,7 @@ function validatingChannelFixture(t, server) {
   return {state,authenticate};
 }
 
-test('actual HTTPS and WSS validate TLS, channel authentication and production response dispatch',async t=>{
+test('actual HTTPS and WSS validate TLS, agent authentication and production response dispatch',async t=>{
   const certs=certificates(t);
   const cases=[
     {label:'trusted TLS correlated response'},
@@ -215,8 +215,8 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
     {label:'wrong token',token:'tls-invalid-authority',denial:'UNAUTHORIZED'},
     {label:'missing token',token:undefined,denial:'UNAUTHORIZED'},
     {label:'token without AGENT_CONNECT',token:'tls-owner-authority',denial:'FORBIDDEN'},
-    {label:'unregistered channel identity',token:'tls-unregistered-authority',denial:'FORBIDDEN'},
-    {label:'authenticated channel differs from local identity',token:'tls-other-authority',identityMismatch:true},
+    {label:'unregistered agent identity',token:'tls-unregistered-authority',denial:'FORBIDDEN'},
+    {label:'authenticated agent differs from local identity',token:'tls-other-authority',identityMismatch:true},
   ];
   for(const scenario of cases) await t.test(scenario.label,async t=>{
     const {certificate='trusted',trust=true,tls=true,denial,identityMismatch=false}=scenario;
@@ -230,7 +230,7 @@ test('actual HTTPS and WSS validate TLS, channel authentication and production r
       res.writeHead(principal?200:401,{'Content-Type':'application/json'});
       res.end(JSON.stringify(principal?{ok:true}:{error:'unauthorized'}));
     });
-    const fixture=validatingChannelFixture(t,server);
+    const fixture=validatingAgentFixture(t,server);
     const origin=await listen(t,server);
     const env={...process.env,TEST_ORIGIN:origin,TEST_SUBJECT:'int_test'};
     delete env.NODE_TLS_REJECT_UNAUTHORIZED;delete env.NODE_EXTRA_CA_CERTS;delete env.TEST_TOKEN;
@@ -294,7 +294,7 @@ test('a retired voice turn cannot send errors through the replacement authentica
   assert.ok(!h.logs.join('\n').includes('sensitive-sentinel'));
 });
 
-test('ready for another channel cannot mark the integration connected',async t=>{
+test('ready for another agent cannot mark the integration connected',async t=>{
   const origin=await wsFixture(t,ws=>ws.on('message',()=>ws.send(JSON.stringify({type:'agent.ready',agentId:'int_someone_else'}))));
   const h=harness(origin);t.after(()=>h.bridge.stop());h.bridge.start();
   await until(()=>!h.bridge.started);
