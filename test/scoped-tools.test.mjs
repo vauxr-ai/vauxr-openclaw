@@ -81,6 +81,61 @@ test('control allowlist denies administration and reserved playback, validates p
   assert.deepEqual(calls[1].body,{command:'mute'});
 });
 
+test('integration mints a same-origin single-use firmware URL before OTA dispatch',async t=>{
+  const token='a'.repeat(43);
+  const calls=await fake(t,(url,body)=>{
+    if(url.endsWith('/api/firmware-delivery/voicepe.bin')) {
+      assert.deepEqual(body,{});
+      return {url:`${origin}/firmware-delivery/${token}/voicepe.bin`,expires_in:120};
+    }
+    return {ok:true};
+  });
+  const api=client();
+  const delivery=await api.mintFirmwareDelivery('voicepe.bin');
+  await api.command('dev-1','ota',{url:delivery});
+  assert.equal(calls.length,2);
+  assert.equal(calls[0].options.headers.authorization,'Bearer test-only-authority');
+  assert.deepEqual(calls[1].body,{command:'ota',params:{url:delivery}});
+});
+
+test('firmware delivery rejects unsafe names and malformed or cross-origin capabilities',async t=>{
+  let response;
+  await fake(t,()=>response);
+  const api=client();
+  for(const name of ['voicepe','../voicepe.bin','voicepe.bin?secret','voicepe.bin/other']) {
+    await assert.rejects(api.mintFirmwareDelivery(name),/Invalid firmware filename/);
+  }
+  const token='a'.repeat(43);
+  for(const value of [
+    {url:`http://example.invalid/firmware-delivery/${token}/voicepe.bin`,expires_in:120},
+    {url:`${origin}/firmware-delivery/${token}/other.bin`,expires_in:120},
+    {url:`${origin}/firmware-delivery/short/voicepe.bin`,expires_in:120},
+    {url:`http://user:secret@${new URL(origin).host}/firmware-delivery/${token}/voicepe.bin`,expires_in:120},
+    {url:`${origin}/firmware-delivery/${token}/voicepe.bin?secret=1`,expires_in:120},
+    {url:`${origin}/firmware-delivery/${token}/voicepe.bin`,expires_in:0},
+    {url:`${origin}/firmware-delivery/${token}/voicepe.bin`,expires_in:121},
+    {url:`${origin}/firmware-delivery/${token}/voicepe.bin`,expires_in:'120'},
+  ]) {
+    response=value;
+    await assert.rejects(api.mintFirmwareDelivery('voicepe.bin'),/Invalid firmware delivery response/);
+  }
+});
+
+test('vauxr_control mints and dispatches filename OTA without exposing its capability',async()=>{
+  const tools=[]; const calls=[];
+  registerTools({registerTool(tool){tools.push(tool);}}, {
+    async mintFirmwareDelivery(name){calls.push(['mint',name]);return 'http://server/firmware-delivery/'+'a'.repeat(43)+'/'+name;},
+    async command(device,command,params){calls.push(['command',device,command,params]);},
+    defaultOtaUrl(){return undefined;},
+  });
+  const control=tools.find(tool=>tool.name==='vauxr_control');
+  const result=await control.execute('1',{device_id:'dev-1',command:'ota',firmware_filename:'voicepe.bin'});
+  assert.deepEqual(calls.map(call=>call[0]),['mint','command']);
+  assert.equal(JSON.stringify(result).includes('firmware-delivery'),false);
+  await assert.rejects(control.execute('2',{device_id:'dev-1',command:'ota'}),/requires firmware_filename/);
+  await assert.rejects(control.execute('3',{device_id:'dev-1',command:'ota',url:'http://server/fw.bin',firmware_filename:'voicepe.bin'}),/either/);
+});
+
 test('strict HTTPS rejects HTTP API and firmware downgrade, embedded credentials and query secrets',async t=>{
   const calls=await fake(t,()=>({ok:true}));
   assert.throws(()=>new VauxrAPIClient('http://localhost:8080',async()=>'',undefined,true));
