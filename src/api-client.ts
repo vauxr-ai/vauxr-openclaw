@@ -27,6 +27,8 @@ export interface PhysicalConfirmation {
   physical_window_open: boolean;
 }
 const COMMANDS = new Set(["set_volume", "mute", "unmute", "reboot", "ota", "set_barge_in"]);
+const FIRMWARE_NAME = /^[A-Za-z0-9._-]+\.bin$/;
+const DELIVERY_PATH = /^\/firmware-delivery\/[A-Za-z0-9_-]{43}\/[A-Za-z0-9._-]+\.bin$/;
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Vauxr response");
   return value as Record<string, unknown>;
@@ -72,6 +74,21 @@ export class VauxrAPIClient {
   }
   async announce(deviceId: string, text: string): Promise<void> {
     await this.request("POST", `/api/devices/${encodeURIComponent(deviceId)}/announce`, { text });
+  }
+  async mintFirmwareDelivery(filename: string): Promise<string> {
+    if (typeof filename !== "string" || !FIRMWARE_NAME.test(filename) || /[\r\n]/.test(filename) || filename.includes("..")) throw new Error("Invalid firmware filename");
+    const row = object(await this.request("POST", `/api/firmware-delivery/${encodeURIComponent(filename)}`, {}));
+    if (!Number.isSafeInteger(row.expires_in) || (row.expires_in as number) < 1 || (row.expires_in as number) > 120 || typeof row.url !== "string") {
+      throw new Error("Invalid firmware delivery response");
+    }
+    let url: URL;
+    try { url = new URL(row.url); } catch { throw new Error("Invalid firmware delivery response"); }
+    if (url.origin !== this.baseUrl || url.username || url.password || url.search || url.hash ||
+        !DELIVERY_PATH.test(url.pathname) || !url.pathname.endsWith(`/${filename}`) ||
+        row.url !== `${url.origin}${url.pathname}`) {
+      throw new Error("Invalid firmware delivery response");
+    }
+    return url.href;
   }
   async command(deviceId: string, command: string, params?: Record<string, unknown>): Promise<void> {
     if (!COMMANDS.has(command)) throw new Error("Unsupported Vauxr command; playback URLs and administration are not available");

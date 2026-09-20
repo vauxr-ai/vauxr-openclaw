@@ -68,7 +68,7 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
       name: "vauxr_control",
       label: "Vauxr Control",
       description:
-        "Send a control command to a Vauxr voice device (set volume, mute, unmute, reboot, ota, or set_barge_in). Playback URLs are reserved by the server contract and are not supported. No owner, credential, device configuration or firmware publication administration is available.",
+        "Send a control command to a Vauxr voice device (set volume, mute, unmute, reboot, ota, or set_barge_in). OTA can securely deliver an existing server-side firmware file by filename. Playback URLs are reserved by the server contract and are not supported. No owner, credential, device configuration or firmware publication administration is available.",
       parameters: Type.Object({
         device_id: Type.String({ description: "ID of the device to control" }),
         command: Type.Union(
@@ -92,7 +92,14 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
         url: Type.Optional(
           Type.String({
             description:
-              "Firmware HTTP(S) URL for ota. Required unless otaPublicBase is configured. Must be reachable by the device (not Docker DNS).",
+              "Firmware HTTP(S) URL for ota. Mutually exclusive with firmware_filename; required unless firmware_filename or otaPublicBase is provided. Must be reachable by the device (not Docker DNS).",
+          }),
+        ),
+        firmware_filename: Type.Optional(
+          Type.String({
+            description:
+              "Existing server-side .bin filename for ota. The authenticated integration mints and dispatches a short-lived URL internally.",
+            pattern: "^[A-Za-z0-9._-]+\\.bin$",
           }),
         ),
         enabled: Type.Optional(
@@ -108,16 +115,22 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
           command: "set_volume" | "mute" | "unmute" | "reboot" | "ota" | "set_barge_in";
           volume?: number;
           url?: string;
+          firmware_filename?: string;
           enabled?: boolean;
         };
         let cmdParams: Record<string, unknown> | undefined;
         if (p.command === "set_volume") {
           cmdParams = { volume: p.volume };
         } else if (p.command === "ota") {
-          const url = p.url?.trim() || client.defaultOtaUrl();
+          if (p.url !== undefined && p.firmware_filename !== undefined) {
+            throw new Error("ota accepts either url or firmware_filename, not both");
+          }
+          const url = p.firmware_filename !== undefined
+            ? await client.mintFirmwareDelivery(p.firmware_filename)
+            : p.url?.trim() || client.defaultOtaUrl();
           if (!url) {
             throw new Error(
-              "ota requires params.url, or set channels.vauxr.otaPublicBase to a LAN origin the device can fetch (not Docker DNS)",
+              "ota requires firmware_filename or params.url, or set channels.vauxr.otaPublicBase to a LAN origin the device can fetch (not Docker DNS)",
             );
           }
           cmdParams = { url };
