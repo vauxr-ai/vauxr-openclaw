@@ -128,6 +128,45 @@ test('message-tool progress is spoken before the final assistant response',async
   ]);
 });
 
+test('native commentary preamble is spoken once before the final assistant response',async t=>{
+  let socket,emit;
+  const responses=[];
+  const origin=await wsFixture(t,ws=>{
+    socket=ws;
+    ws.on('message',data=>{
+      const frame=JSON.parse(String(data));
+      if(frame.type==='agent.auth')ws.send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));
+      else responses.push(frame);
+    });
+  });
+  const h=harness(origin);t.after(()=>h.bridge.stop());
+  h.bridge.api.runtime.events.onAgentEvent=callback=>{emit=callback;return()=>{};};
+  h.bridge.api.runtime.channel={
+    session:{resolveStorePath(){return '/unused';},recordInboundSession(){}},
+    inbound:{async run({adapter}){await adapter.resolveTurn().runDispatch();}},
+    reply:{
+      createReplyDispatcherWithTyping(){return{dispatcher:{}};},
+      async dispatchReplyFromConfig({replyOptions}){
+        replyOptions.onAgentRunStart('sdk-commentary-run');
+        emit({runId:'sdk-commentary-run',stream:'item',data:{kind:'preamble',title:'Preamble',phase:'update',progressText:'I am checking',itemId:'commentary-1'}});
+        emit({runId:'sdk-commentary-run',stream:'item',data:{kind:'preamble',title:'Preamble',phase:'end',progressText:'I am checking that now.',itemId:'commentary-1'}});
+        emit({runId:'sdk-commentary-run',stream:'item',data:{kind:'preamble',title:'Preamble',phase:'end',progressText:'I am checking that now.',itemId:'commentary-1'}});
+        emit({runId:'sdk-commentary-run',stream:'assistant',data:{delta:'The check is complete.'}});
+        emit({runId:'sdk-commentary-run',stream:'lifecycle',data:{phase:'end'}});
+      },
+    },
+  };
+  h.bridge.start();await until(()=>h.bridge.authenticated);
+  socket.send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'Please check'}));
+  await until(()=>responses.some(frame=>frame.type==='agent.response.end'));
+  const runId=responses[0].runId;
+  assert.deepEqual(responses,[
+    {type:'agent.response.delta',deviceId:'dev-test',runId,text:'I am checking that now.'},
+    {type:'agent.response.delta',deviceId:'dev-test',runId,text:'The check is complete.'},
+    {type:'agent.response.end',deviceId:'dev-test',runId},
+  ]);
+});
+
 test('rotation reconnects using replacement and ready gates new connection; revoked stops retries explicitly',async t=>{
   const sockets=[],authorities=[];
   const origin=await wsFixture(t,ws=>{sockets.push(ws);ws.on('message',data=>{const frame=JSON.parse(String(data));if(frame.type==='agent.auth')authorities.push(frame.token);});});

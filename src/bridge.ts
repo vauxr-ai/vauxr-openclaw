@@ -46,6 +46,7 @@ interface ActiveVauxrTurn {
   collect?: (text: string) => void;
   error?: boolean;
   outboundSequence: number;
+  spokenPreambleItems?: Set<string>;
 }
 
 interface OutboundTurnContext {
@@ -456,6 +457,25 @@ export class VauxrBridge {
         return;
       }
       const { deviceId, protocolRunId: runId } = active;
+
+      // OpenClaw publishes native commentary/progress as completed preamble
+      // items, not as assistant deltas or message-tool outbound text. Forward
+      // the completed item once so partial update snapshots are not repeated
+      // verbatim by TTS when the matching `end` event arrives.
+      if (event.stream === "item"
+          && event.data["kind"] === "preamble"
+          && event.data["phase"] === "end") {
+        const text = event.data["progressText"];
+        if (typeof text !== "string" || text.length === 0) return;
+        const itemId = event.data["itemId"];
+        if (typeof itemId === "string" && itemId.length > 0) {
+          active.spokenPreambleItems ??= new Set<string>();
+          if (active.spokenPreambleItems.has(itemId)) return;
+          active.spokenPreambleItems.add(itemId);
+        }
+        this.send({ type: "agent.response.delta", deviceId, runId, text });
+        return;
+      }
 
       if (event.stream === "assistant") {
         // Only forward the incremental delta. data.text is the running
