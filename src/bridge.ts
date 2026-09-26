@@ -1,5 +1,6 @@
 import { voiceContext } from "./voice_context.js";
 import { RealtimeConversations } from "./realtime.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import WebSocket from "ws";
 import { endpoints } from "./transport.js";
 import type { VauxrAuth } from "./auth.js";
@@ -44,6 +45,21 @@ interface ActiveVauxrTurn {
   protocolRunId: string;
   collect?: (text: string) => void;
   error?: boolean;
+  outboundSequence: number;
+}
+
+interface OutboundTurnContext {
+  bridge: VauxrBridge;
+  turn: ActiveVauxrTurn;
+}
+
+const outboundTurnContext = new AsyncLocalStorage<OutboundTurnContext>();
+
+/** Deliver message-tool text only to the exact voice turn that invoked it. */
+export function deliverCurrentTurnText(deviceId: string, text: string): string {
+  const context = outboundTurnContext.getStore();
+  if (!context) throw new Error("No active Vauxr voice turn for outbound text");
+  return context.bridge.deliverTurnText(context.turn, deviceId, text);
 }
 
 const INITIAL_RECONNECT_MS = 1000;
@@ -301,7 +317,7 @@ export class VauxrBridge {
 
     // Register before dispatch so onAgentEvent can correlate any event the
     // agent runtime emits for this turn back to the originating device.
-    const activeTurn: ActiveVauxrTurn = { deviceId, protocolRunId, collect };
+    const activeTurn: ActiveVauxrTurn = { deviceId, protocolRunId, collect, outboundSequence: 0 };
     this.activeRuns.set(deviceId, activeTurn);
 
     // Minimal inbound context. Voice channels don't carry replies, media,
@@ -350,31 +366,33 @@ export class VauxrBridge {
             recordInboundSession:
               this.api.runtime.channel.session.recordInboundSession,
             runDispatch: async () => {
-              // Outbound delivery flows through the existing onAgentEvent
-              // delta tap (subscribeAgentEvents) for lowest TTS latency — see
-              // spec decision D2. The reply dispatcher's `deliver` is a no-op
-              // here; the dispatcher exists only to satisfy the channel-turn
-              // contract and to give the dispatch-from-config pipeline a sink
-              // to write into.
+              // Ordinary assistant output flows through the onAgentEvent delta
+              // tap for lowest TTS latency. Explicit message-tool text uses the
+              // channel outbound adapter, bound below to this exact turn. The
+              // reply dispatcher's `deliver` remains a no-op; it only satisfies
+              // the channel-turn contract.
               const { dispatcher } =
                 this.api.runtime.channel.reply.createReplyDispatcherWithTyping({
                   deliver: async () => undefined,
                 });
-              return await this.api.runtime.channel.reply.dispatchReplyFromConfig({
-                ctx: ctxPayload as never,
-                cfg,
-                dispatcher,
-                // Voice replies are streamed to the originating device above.
-                // Do not inherit a harness/config default requiring message.send.
-                replyOptions: {
-                  sourceReplyDeliveryMode: "automatic",
-                  onAgentRunStart: (runId) => {
-                    if (this.activeRuns.get(deviceId) === activeTurn) {
-                      this.runIdToTurn.set(runId, activeTurn);
-                    }
+              return await outboundTurnContext.run(
+                { bridge: this, turn: activeTurn },
+                () => this.api.runtime.channel.reply.dispatchReplyFromConfig({
+                  ctx: ctxPayload as never,
+                  cfg,
+                  dispatcher,
+                  // Voice replies are streamed to the originating device above.
+                  // Do not inherit a harness/config default requiring message.send.
+                  replyOptions: {
+                    sourceReplyDeliveryMode: "automatic",
+                    onAgentRunStart: (runId) => {
+                      if (this.activeRuns.get(deviceId) === activeTurn) {
+                        this.runIdToTurn.set(runId, activeTurn);
+                      }
+                    },
                   },
-                },
-              });
+                }),
+              );
             },
             // Required since OpenClaw 2026.8 for inbound adapters. Voice
             // turns are non-durable, so there is no adoption lifecycle. If
@@ -503,6 +521,22 @@ export class VauxrBridge {
         });
       }
     });
+  }
+
+  deliverTurnText(turn: ActiveVauxrTurn, deviceId: string, text: string): string {
+    if (!text || turn.collect || turn.deviceId !== deviceId
+        || this.activeRuns.get(deviceId) !== turn
+        || !this.authenticated || this.ws?.readyState !== WebSocket.OPEN) {
+      throw new Error("Vauxr voice turn is no longer available for outbound text");
+    }
+    const messageId = `${turn.protocolRunId}:${++turn.outboundSequence}`;
+    this.send({
+      type: "agent.response.delta",
+      deviceId,
+      runId: turn.protocolRunId,
+      text,
+    });
+    return messageId;
   }
 
   private send(frame: VauxrOutboundFrame): void {

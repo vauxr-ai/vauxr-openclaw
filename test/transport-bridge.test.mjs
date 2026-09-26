@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { VauxrBridge } from '../dist/src/bridge.js';
+import { vauxrPlugin } from '../dist/src/channel.js';
 import { requestJson, endpoints } from '../dist/src/transport.js';
 
 const run = promisify(execFile);
@@ -83,6 +84,48 @@ test('real WS waits for ready, ignores early transcripts, sanitizes frames/error
   socket.close(1000,'close-secret-sentinel');await until(()=>h.state.value==='disconnected');
   assert.equal(h.bridge.activeRuns.size,0);assert.equal(h.bridge.runIdToTurn.size,0);
   assert.ok(!h.logs.join('\n').includes('secret-sentinel'));
+});
+
+test('message-tool progress is spoken before the final assistant response',async t=>{
+  let socket,emit;
+  const responses=[];
+  const origin=await wsFixture(t,ws=>{
+    socket=ws;
+    ws.on('message',data=>{
+      const frame=JSON.parse(String(data));
+      if(frame.type==='agent.auth')ws.send(JSON.stringify({type:'agent.ready',agentId:'int_test'}));
+      else responses.push(frame);
+    });
+  });
+  const h=harness(origin);t.after(()=>h.bridge.stop());
+  h.bridge.api.runtime.events.onAgentEvent=callback=>{emit=callback;return()=>{};};
+  h.bridge.api.runtime.channel={
+    session:{resolveStorePath(){return '/unused';},recordInboundSession(){}},
+    inbound:{async run({adapter}){await adapter.resolveTurn().runDispatch();}},
+    reply:{
+      createReplyDispatcherWithTyping(){return{dispatcher:{}};},
+      async dispatchReplyFromConfig({replyOptions}){
+        replyOptions.onAgentRunStart('sdk-progress-run');
+        const delivered=await vauxrPlugin.outbound.sendText({cfg:{},to:'dev-test',text:'I am checking that now.'});
+        assert.match(delivered.messageId,/^[0-9a-f-]{36}:1$/);
+        await assert.rejects(
+          vauxrPlugin.outbound.sendText({cfg:{},to:'another-device',text:'must not leak'}),
+          /no longer available/,
+        );
+        emit({runId:'sdk-progress-run',stream:'assistant',data:{delta:'The check is complete.'}});
+        emit({runId:'sdk-progress-run',stream:'lifecycle',data:{phase:'end'}});
+      },
+    },
+  };
+  h.bridge.start();await until(()=>h.bridge.authenticated);
+  socket.send(JSON.stringify({type:'agent.transcript',deviceId:'dev-test',text:'Please check'}));
+  await until(()=>responses.some(frame=>frame.type==='agent.response.end'));
+  const runId=responses[0].runId;
+  assert.deepEqual(responses,[
+    {type:'agent.response.delta',deviceId:'dev-test',runId,text:'I am checking that now.'},
+    {type:'agent.response.delta',deviceId:'dev-test',runId,text:'The check is complete.'},
+    {type:'agent.response.end',deviceId:'dev-test',runId},
+  ]);
 });
 
 test('rotation reconnects using replacement and ready gates new connection; revoked stops retries explicitly',async t=>{

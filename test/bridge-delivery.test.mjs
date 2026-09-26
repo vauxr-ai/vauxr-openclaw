@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { VauxrBridge } from '../dist/src/bridge.js';
+import { vauxrPlugin } from '../dist/src/channel.js';
 
 test('every Vauxr transcript requests automatic delivery without changing shared config', async () => {
   for (const visibleReplies of [undefined, 'automatic', 'message_tool']) {
@@ -44,4 +45,43 @@ test('every Vauxr transcript requests automatic delivery without changing shared
     }
     assert.deepEqual(cfg, original);
   }
+});
+
+test('late message-tool progress from a retired turn cannot leak into its replacement', async () => {
+  const sent = [];
+  let releaseOld;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const api = {
+    config: { agents: { list: [{ id: 'assistant', default: true }] } },
+    logger: { info() {}, warn() {} },
+    runtime: { channel: {
+      session: { resolveStorePath() { return '/unused'; }, recordInboundSession() {} },
+      inbound: { async run({ adapter }) { await adapter.resolveTurn().runDispatch(); } },
+      reply: {
+        createReplyDispatcherWithTyping() { return { dispatcher: {} }; },
+        async dispatchReplyFromConfig() {
+          const blocked = new Promise(resolve => { releaseOld = resolve; });
+          markStarted();
+          await blocked;
+          await vauxrPlugin.outbound.sendText({ cfg: {}, to: 'device-1', text: 'stale progress' });
+        },
+      },
+    } },
+  };
+  const bridge = new VauxrBridge(api, { url: 'http://localhost:1' });
+  bridge.authenticated = true;
+  bridge.ws = { readyState: 1, send(frame) { sent.push(JSON.parse(frame)); } };
+
+  const oldDispatch = bridge.dispatchTranscript('device-1', 'old request');
+  await started;
+  const oldTurn = bridge.activeRuns.get('device-1');
+  const replacement = { deviceId: 'device-1', protocolRunId: 'replacement', outboundSequence: 0 };
+  bridge.activeRuns.set('device-1', replacement);
+  releaseOld();
+  await oldDispatch;
+
+  assert.notEqual(oldTurn, replacement);
+  assert.equal(bridge.activeRuns.get('device-1'), replacement);
+  assert.deepEqual(sent, []);
 });
