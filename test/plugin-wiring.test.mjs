@@ -93,6 +93,13 @@ test('gateway publishes actual states and abort stops service without status cre
   delete globalThis.__vauxrRuntime;
 });
 
+test('outbound text refuses to claim delivery without its originating voice turn', async () => {
+  await assert.rejects(
+    vauxrPlugin.outbound.sendText({ cfg: config(), to: 'device-1', text: 'orphaned progress' }),
+    /No active Vauxr voice turn/,
+  );
+});
+
 test('health-monitor restart resumes a retired bridge without re-pairing', async () => {
   const runtime = new VauxrRuntime({ runtime: { state: { resolveStateDir: () => '/tmp/vauxr-runtime-recovery' } } },
     { url: 'https://vauxr.example.test' });

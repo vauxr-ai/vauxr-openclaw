@@ -1,5 +1,6 @@
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/core";
 import { DEFAULT_VOICE_SYSTEM_PROMPT } from "./defaults.js";
+import { deliverCurrentTurnText } from "./bridge.js";
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
@@ -61,14 +62,15 @@ export const vauxrPlugin = createChatChannelPlugin<VauxrAccount>({
   }) as Parameters<typeof createChatChannelPlugin<VauxrAccount>>[0]["base"],
   // Only scoped, enrolled channel authority can deliver physical-device voice turns.
   outbound: {
-    // Outbound responses are delivered via the WS bridge, not the outbound adapter
-    // This stub satisfies the ChannelPlugin interface
     base: {
       deliveryMode: "direct",
     },
     attachedResults: {
       channel: "vauxr",
-      sendText: async () => ({ messageId: "bridge" }),
+      sendText: async ({ to, text, signal }) => {
+        if (signal?.aborted) throw signal.reason ?? new Error("Vauxr outbound send aborted");
+        return { messageId: deliverCurrentTurnText(to, text) };
+      },
     },
   },
 });
