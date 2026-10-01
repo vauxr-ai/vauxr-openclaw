@@ -117,7 +117,7 @@ export class VauxrAPIClient {
     });
   }
   async confirmPairing(action: "initiate" | "approve", confirmation: PhysicalConfirmation): Promise<{ status: "initiated" | "approved"; device_id: string }> {
-    if (!["initiate", "approve"].includes(action) || confirmation.heard_from_device !== true || confirmation.physical_window_open !== true || (typeof confirmation.code !== "string" || confirmation.code.length !== 8 || !/^[0-9]{8}$/.test(confirmation.code))) throw new Error("Pairing requires the exact eight digits heard locally from the intended device and explicit confirmation that its physical pairing window is still open");
+    if (!["initiate", "approve"].includes(action) || confirmation.heard_from_device !== true || confirmation.physical_window_open !== true || (typeof confirmation.code !== "string" || confirmation.code.length !== 4 || !/^[0-9]{4}$/.test(confirmation.code))) throw new Error("Pairing requires the exact four digits heard locally from the intended device and explicit confirmation that its physical pairing window is still open");
     const request = (await this.listPairingRequests()).find(row => row.request_id === confirmation.request_id && row.device_id === confirmation.device_id);
     if (!request || request.status !== (action === "initiate" ? "ready" : "initiated") || Date.now() >= request.expires_at * 1000) throw new Error("Pairing request is unavailable, expired or in the wrong state; check the intended device and reopen its physical window if needed");
     const response = object(await this.request("POST", `/api/enrollment/v1/${action}`, { request_id: request.request_id, code: confirmation.code }));
