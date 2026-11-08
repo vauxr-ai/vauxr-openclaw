@@ -149,7 +149,7 @@ test('strict HTTPS rejects HTTP API and firmware downgrade, embedded credentials
 test('registered tools expose scoped operations and truthful pairing outcome without echoing code',async()=>{
   const tools=[];
   registerTools({registerTool(tool){tools.push(tool);}}, {async confirmPairing(){return {status:'approved',device_id:'dev-1'};}});
-  assert.deepEqual(tools.map(tool=>tool.name),['vauxr_devices','vauxr_announce','vauxr_control','vauxr_pairing']);
+  assert.deepEqual(tools.map(tool=>tool.name),['vauxr_ui_context_read','vauxr_ui_agent_name_update','vauxr_devices','vauxr_announce','vauxr_control','vauxr_pairing']);
   const pairing=tools.at(-1);
   assert.match(pairing.description,/directly supplied by the user/);
   const result=await pairing.execute('1',{action:'approve',code:'0123'});

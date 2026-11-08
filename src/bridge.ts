@@ -9,7 +9,10 @@ import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 
 /** Vauxr protocol frames sent by vauxr to the channel plugin */
 interface VauxrInboundFrame {
-  type: "agent.realtime.request" | "agent.transcript" | "agent.device_state" | "agent.ready" | "error";
+  type: "agent.realtime.request" | "agent.transcript" | "agent.device_state" | "agent.ready" | "agent.ui.result" | "error";
+  uiContext?: UIContext;
+  result?: unknown;
+  error?: string;
   requestId?: string;
   session?: string;
   operation?: string;
@@ -29,6 +32,7 @@ interface VauxrInboundFrame {
 type VauxrOutboundFrame =
   | { type: "agent.realtime.result"; requestId: string; deviceId: string; result?: unknown; error?: string }
   | { type: "agent.auth"; token: string }
+  | { type: "agent.ui.name.update"; deviceId: string; requestId: string; resourceId: string; newValue: string }
   | { type: "agent.response.delta"; deviceId: string; runId: string; text: string }
   | { type: "agent.response.end"; deviceId: string; runId: string }
   | { type: "agent.response.error"; deviceId: string; runId: string; message: string };
@@ -40,7 +44,13 @@ interface VauxrBridgeConfig {
   voiceSystemPrompt?: string;
 }
 
+interface UIContext {
+  route: string; resource_type: string | null; resource_id: string | null;
+  setting_key: string | null; current_value: string | null;
+}
+
 interface ActiveVauxrTurn {
+  uiContext?: UIContext;
   deviceId: string;
   protocolRunId: string;
   collect?: (text: string) => void;
@@ -61,6 +71,12 @@ export function deliverCurrentTurnText(deviceId: string, text: string): string {
   const context = outboundTurnContext.getStore();
   if (!context) throw new Error("No active Vauxr voice turn for outbound text");
   return context.bridge.deliverTurnText(context.turn, deviceId, text);
+}
+
+export function currentUIContext(update?: { resource_id: string; new_value: string }): Promise<unknown> {
+  const context = outboundTurnContext.getStore();
+  if (!context) throw new Error("No Vauxr turn context");
+  return context.bridge.uiTool(context.turn, update);
 }
 
 const INITIAL_RECONNECT_MS = 1000;
@@ -88,6 +104,8 @@ export class VauxrBridge {
   private sentinelMode = new Map<string, "passthrough" | "suppressed">();
   private wsUrl: string;
   private authenticated = false;
+  private uiRequests = new Map<string, { deviceId: string; resolve: (result: unknown) => void;
+    reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private generation = 0;
   #socketCredential?: string;
 
@@ -134,6 +152,10 @@ export class VauxrBridge {
 
   private retireTurns() {
     this.authenticated = false;
+    for (const pending of this.uiRequests.values()) {
+      clearTimeout(pending.timer); pending.reject(new Error("Vauxr disconnected; check settings before retrying"));
+    }
+    this.uiRequests.clear();
     this.activeRuns.clear(); this.runIdToTurn.clear();
     this.sentinelBuffer.clear(); this.sentinelMode.clear();
   }
@@ -220,7 +242,7 @@ export class VauxrBridge {
         if (frame.deviceId && frame.text && !this.activeRuns.has(frame.deviceId)) {
           // Never let a dispatch failure escape the ws message handler: an
           // unhandled rejection here takes down the whole gateway process.
-          void this.dispatchTranscript(frame.deviceId, frame.text, frame.deviceDisplayName).catch(
+          void this.dispatchTranscript(frame.deviceId, frame.text, frame.deviceDisplayName, undefined, frame.uiContext).catch(
             (err) => {
               this.api.logger.warn(
                 "[vauxr-bridge] Transcript dispatch failed",
@@ -239,6 +261,14 @@ export class VauxrBridge {
         this.authenticated = true;
         this.api.logger.debug?.("[vauxr-bridge] Agent authenticated");
         break;
+      case "agent.ui.result": {
+        const pending = this.uiRequests.get(frame.requestId ?? "");
+        if (!pending || frame.deviceId !== pending.deviceId) break;
+        this.uiRequests.delete(frame.requestId!); clearTimeout(pending.timer);
+        if (frame.error) pending.reject(new Error("Name update unavailable or stale"));
+        else pending.resolve(frame.result);
+        break;
+      }
       case "error":
         this.api.logger.warn("[vauxr-bridge] Server rejected Agent operation");
         if (frame.code === "UNAUTHORIZED") {
@@ -297,7 +327,7 @@ export class VauxrBridge {
     }
   }
 
-  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown, collect?: (text: string) => void): Promise<void> {
+  private async dispatchTranscript(deviceId: string, text: string, deviceDisplayName?: unknown, collect?: (text: string) => void, uiContext?: UIContext): Promise<void> {
     const cfg = (this.api as { config?: OpenClawConfig }).config as OpenClawConfig;
     // Construct the sessionKey in the same form the old subagent.run path
     // ended up producing after openclaw's internal normalization
@@ -319,6 +349,11 @@ export class VauxrBridge {
     // Register before dispatch so onAgentEvent can correlate any event the
     // agent runtime emits for this turn back to the originating device.
     const activeTurn: ActiveVauxrTurn = { deviceId, protocolRunId, collect, outboundSequence: 0 };
+    if (uiContext && ["agents", "devices", "settings"].includes(uiContext.route)) {
+      activeTurn.uiContext = { route: uiContext.route, resource_type: uiContext.resource_type,
+        resource_id: uiContext.resource_id, setting_key: uiContext.setting_key,
+        current_value: uiContext.current_value };
+    }
     this.activeRuns.set(deviceId, activeTurn);
 
     // Minimal inbound context. Voice channels don't carry replies, media,
@@ -540,6 +575,33 @@ export class VauxrBridge {
           message: "Agent error",
         });
       }
+    });
+  }
+
+  async uiTool(turn: ActiveVauxrTurn, update?: { resource_id: string; new_value: string }): Promise<unknown> {
+    const context = turn.uiContext;
+    if (!this.authenticated || this.ws?.readyState !== WebSocket.OPEN) {
+      throw new Error("Vauxr disconnected");
+    }
+    if (update === undefined) {
+      if (!context) throw new Error("Vauxr UI context unavailable");
+      return structuredClone(context);
+    }
+    if (typeof update.resource_id !== "string" || !update.resource_id
+        || typeof update.new_value !== "string" || !update.new_value.trim() || update.new_value.length > 120
+        || /[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u.test(update.new_value)) {
+      throw new Error("Invalid name update");
+    }
+    const requestId = crypto.randomUUID();
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.uiRequests.delete(requestId);
+        reject(new Error("Name update timed out; check settings before retrying"));
+      }, 10000);
+      this.uiRequests.set(requestId, { deviceId: turn.deviceId, resolve, reject, timer });
+      this.send({ type: "agent.ui.name.update", deviceId: turn.deviceId,
+        requestId, resourceId: update.resource_id,
+        newValue: update.new_value.trim() });
     });
   }
 
