@@ -32,6 +32,7 @@ interface VauxrInboundFrame {
 type VauxrOutboundFrame =
   | { type: "agent.realtime.result"; requestId: string; deviceId: string; result?: unknown; error?: string }
   | { type: "agent.auth"; token: string }
+  | { type: "agent.ui.action"; deviceId: string; requestId: string; action: Record<string, unknown> }
   | { type: "agent.ui.name.update"; deviceId: string; requestId: string; resourceId: string; newValue: string }
   | { type: "agent.response.delta"; deviceId: string; runId: string; text: string }
   | { type: "agent.response.end"; deviceId: string; runId: string }
@@ -46,7 +47,7 @@ interface VauxrBridgeConfig {
 
 interface UIContext {
   route: string; resource_type: string | null; resource_id: string | null;
-  setting_key: string | null; current_value: string | null;
+  setting_key: string | null; current_value: string | null; revision?: string;
 }
 
 interface ActiveVauxrTurn {
@@ -77,6 +78,12 @@ export function currentUIContext(update?: { resource_id: string; new_value: stri
   const context = outboundTurnContext.getStore();
   if (!context) throw new Error("No Vauxr turn context");
   return context.bridge.uiTool(context.turn, update);
+}
+
+export function currentContextAction(action: Record<string, unknown>): Promise<unknown> {
+  const context = outboundTurnContext.getStore();
+  if (!context) throw new Error("No Vauxr turn context");
+  return context.bridge.contextAction(context.turn, action);
 }
 
 const INITIAL_RECONNECT_MS = 1000;
@@ -352,7 +359,7 @@ export class VauxrBridge {
     if (uiContext && ["agents", "devices", "settings"].includes(uiContext.route)) {
       activeTurn.uiContext = { route: uiContext.route, resource_type: uiContext.resource_type,
         resource_id: uiContext.resource_id, setting_key: uiContext.setting_key,
-        current_value: uiContext.current_value };
+        current_value: uiContext.current_value, ...(typeof uiContext.revision === "string" ? { revision: uiContext.revision } : {}) };
     }
     this.activeRuns.set(deviceId, activeTurn);
 
@@ -575,6 +582,22 @@ export class VauxrBridge {
           message: "Agent error",
         });
       }
+    });
+  }
+
+  async contextAction(turn: ActiveVauxrTurn, action: Record<string, unknown>): Promise<unknown> {
+    if (!this.authenticated || this.ws?.readyState !== WebSocket.OPEN) throw new Error("Vauxr disconnected");
+    const voice = action.op === "voice_end" || action.op === "voice_follow_up";
+    if (!voice && !turn.uiContext?.revision) throw new Error("Fresh Vauxr UI context required");
+    const requestId = crypto.randomUUID();
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.uiRequests.delete(requestId);
+        reject(new Error("Vauxr action timed out; check state before retrying"));
+      }, 15000);
+      this.uiRequests.set(requestId, { deviceId: turn.deviceId, resolve, reject, timer });
+      this.send({type:"agent.ui.action", deviceId:turn.deviceId, requestId,
+        action:voice ? action : {...action, revision:turn.uiContext!.revision}});
     });
   }
 

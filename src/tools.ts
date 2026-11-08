@@ -1,4 +1,4 @@
-import { currentUIContext } from "./bridge.js";
+import { currentUIContext, currentContextAction } from "./bridge.js";
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { VauxrAPIClient, Device } from "./api-client.js";
@@ -16,6 +16,27 @@ function formatDeviceList(devices: Device[]): string {
 }
 
 export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): void {
+  api.registerTool({
+    name: "vauxr_context_action",
+    label: "Vauxr context action",
+    description: "Execute the user's requested page navigation, highlight or selected-agent rename directly through Vauxr. Use the exact resource ID from vauxr_ui_context_read. Physical Live sessions also support voice_end after consumed speech/backend work or voice_follow_up for 1–8 seconds. These do not cancel an external action or override mute. No second confirmation step.",
+    parameters: Type.Object({
+      op:Type.Union([Type.Literal("navigate"), Type.Literal("highlight"), Type.Literal("rename_agent"), Type.Literal("voice_end"), Type.Literal("voice_follow_up")]),
+      route:Type.Optional(Type.Union([Type.Literal("agents"),Type.Literal("devices"),Type.Literal("settings")])),
+      resource_id:Type.Optional(Type.String()), name:Type.Optional(Type.String({minLength:1,maxLength:120})),
+      control:Type.Optional(Type.Literal("agent_name")), seconds:Type.Optional(Type.Integer({minimum:1,maximum:8})),
+    }, {additionalProperties:false}),
+    async execute(_id, params) {
+      const action = params as Record<string, unknown>;
+      if (!action || !["navigate","highlight","rename_agent","voice_end","voice_follow_up"].includes(String(action.op))
+          || Object.keys(action).some(key => !["op","route","resource_id","name","control","seconds"].includes(key))) {
+        throw new Error("Invalid Vauxr action");
+      }
+      const result = await currentContextAction(action);
+      return {content:[{type:"text" as const,text:JSON.stringify(result)}],details:result};
+    },
+  }, {optional:false});
+
   for (const update of [false, true]) {
     api.registerTool({
       name: update ? "vauxr_ui_agent_name_update" : "vauxr_ui_context_read",

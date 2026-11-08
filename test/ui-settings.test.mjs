@@ -39,6 +39,7 @@ test('registered SDK tools update settings through production Python HTTP and in
     const browser = await chromium.launch({ headless: true });
     t.after(() => browser.close());
     const page = await browser.newPage();
+    page.setDefaultTimeout(15000);
     page.setDefaultTimeout(10000);
     const [cookieName, cookieValue] = ready.headers.Cookie.split('=');
     await page.context().addCookies([{ name: cookieName, value: cookieValue, url: ready.origin }]);
@@ -55,21 +56,35 @@ test('registered SDK tools update settings through production Python HTTP and in
         reply: { createReplyDispatcherWithTyping() { return { dispatcher: {} }; },
           async dispatchReplyFromConfig(args) {
             dispatches++;
-            args.replyOptions.onAgentRunStart('sdk-settings');
+            const runId = 'sdk-settings-'+dispatches;
+            args.replyOptions.onAgentRunStart(runId);
+            const action = tools.get('vauxr_context_action');
+            if (dispatches === 2) {
+              const navigation = (await action.execute('navigate', {op:'navigate',route:'devices'})).details;
+              assert.equal(navigation.applied, true);
+              events({runId,stream:'assistant',data:{delta:'Opened Devices.'}});
+              events({runId,stream:'lifecycle',data:{phase:'end'}});
+              return;
+            }
             const read = tools.get('vauxr_ui_context_read'), update = tools.get('vauxr_ui_agent_name_update');
             context = (await read.execute('read', {})).details;
             assert.equal(context.current_value, 'Household');
+            assert.match(context.revision, /^[a-f0-9]{32}$/);
+            const highlighted = (await action.execute('highlight', {op:'highlight', resource_id:context.resource_id, control:'agent_name'})).details;
+            assert.equal(highlighted.applied, true);
             assert.equal(JSON.stringify(context).includes('fixture-'), false);
             await assert.rejects(update.execute('wrong-target', { resource_id: 'wrong', new_value: 'Wrong' }));
             for (const value of ['', '\u200bhidden', '\u0085hidden', 'x'.repeat(121)]) {
               await assert.rejects(update.execute('invalid', { resource_id: context.resource_id, new_value: value }));
             }
+            result = (await action.execute('rename', {op:'rename_agent',resource_id:context.resource_id,name:'Kitchen helper'})).details;
+            await assert.rejects(action.execute('stale', {op:'rename_agent',resource_id:context.resource_id,name:'Stale overwrite'}));
             result = (await update.execute('update', { resource_id: context.resource_id, new_value: 'Kitchen helper' })).details;
             // Server has persisted before tool success, with no owner approval request.
             const agents = await (await fetch(`${ready.origin}/api/agents`, { headers: ready.headers })).json();
             assert.equal(agents.find(agent => agent.id === ready.subject).name, 'Kitchen helper');
-            events({ runId: 'sdk-settings', stream: 'assistant', data: { delta: 'Saved Kitchen helper.' } });
-            events({ runId: 'sdk-settings', stream: 'lifecycle', data: { phase: 'end' } });
+            events({ runId, stream: 'assistant', data: { delta: 'Saved Kitchen helper.' } });
+            events({ runId, stream: 'lifecycle', data: { phase: 'end' } });
           } },
       } } };
     registerTools(api, {});
@@ -94,6 +109,11 @@ test('registered SDK tools update settings through production Python HTTP and in
     await page.getByLabel('Agent text response', { exact: true }).filter({ hasText: 'Saved Kitchen helper.' }).waitFor();
     assert.equal(dispatches, 1);
     await page.getByText('Selected agent: Kitchen helper · Display name', { exact: true }).waitFor();
+    await page.getByLabel('Text message', {exact:true}).fill('Open Devices');
+    await page.getByRole('button',{name:'Send text',exact:true}).click();
+    await page.getByLabel('Agent text response',{exact:true}).filter({hasText:'Opened Devices.'}).waitFor();
+    await page.getByRole('heading',{name:'Devices',exact:true,level:1}).waitFor();
+    assert.equal(dispatches,2);
     await page.reload();
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: 'View agent Kitchen helper', exact: true }).waitFor();
