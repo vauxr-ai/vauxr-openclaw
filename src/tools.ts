@@ -19,17 +19,19 @@ export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): v
   api.registerTool({
     name: "vauxr_context_action",
     label: "Vauxr context action",
-    description: "Execute the user's requested page navigation, highlight or selected-agent rename directly through Vauxr. Use the exact resource ID from vauxr_ui_context_read. Physical Live sessions also support voice_end after consumed speech/backend work or voice_follow_up for 1–8 seconds. These do not cancel an external action or override mute. No second confirmation step.",
+    description: "Execute the user's requested page navigation, highlight or selected-agent rename directly through Vauxr. Use the exact resource ID from vauxr_ui_context_read. Settings also supports reading and publishing the bounded static HTML/CSS interface with its exact document revision; this is not arbitrary React or shell execution. Physical Live sessions also support voice_end after consumed speech/backend work or voice_follow_up for 1–8 seconds. These do not cancel an external action or override mute. No second confirmation step.",
     parameters: Type.Object({
-      op:Type.Union([Type.Literal("navigate"), Type.Literal("highlight"), Type.Literal("rename_agent"), Type.Literal("voice_end"), Type.Literal("voice_follow_up")]),
+      op:Type.Union([Type.Literal("navigate"), Type.Literal("highlight"), Type.Literal("rename_agent"), Type.Literal("voice_end"), Type.Literal("voice_follow_up"), Type.Literal("interface_read"), Type.Literal("interface_save")]),
+      document_revision:Type.Optional(Type.String()), title:Type.Optional(Type.String({minLength:1,maxLength:120})),
+      html:Type.Optional(Type.String({maxLength:20000})), css:Type.Optional(Type.String({maxLength:12000})),
       route:Type.Optional(Type.Union([Type.Literal("agents"),Type.Literal("devices"),Type.Literal("settings")])),
       resource_id:Type.Optional(Type.String()), name:Type.Optional(Type.String({minLength:1,maxLength:120})),
       control:Type.Optional(Type.Literal("agent_name")), seconds:Type.Optional(Type.Integer({minimum:1,maximum:8})),
     }, {additionalProperties:false}),
     async execute(_id, params) {
       const action = params as Record<string, unknown>;
-      if (!action || !["navigate","highlight","rename_agent","voice_end","voice_follow_up"].includes(String(action.op))
-          || Object.keys(action).some(key => !["op","route","resource_id","name","control","seconds"].includes(key))) {
+      if (!action || !["navigate","highlight","rename_agent","voice_end","voice_follow_up","interface_read","interface_save"].includes(String(action.op))
+          || Object.keys(action).some(key => !["op","route","resource_id","name","control","seconds","document_revision","title","html","css"].includes(key))) {
         throw new Error("Invalid Vauxr action");
       }
       const result = await currentContextAction(action);

@@ -59,6 +59,16 @@ test('registered SDK tools update settings through production Python HTTP and in
             const runId = 'sdk-settings-'+dispatches;
             args.replyOptions.onAgentRunStart(runId);
             const action = tools.get('vauxr_context_action');
+            if (dispatches === 3) {
+              const document = (await action.execute('source-read', {op:'interface_read'})).details;
+              assert.equal(document.published, false);
+              const published = (await action.execute('source-save', {op:'interface_save',document_revision:document.revision,title:'Household panel',html:'<section><h2>Household panel</h2></section>',css:'h2 { color: purple; }'})).details;
+              assert.equal(published.published, true);
+              await assert.rejects(action.execute('stale-source', {op:'interface_save',document_revision:document.revision,title:'Stale',html:'<p>Stale</p>',css:''}));
+              events({runId,stream:'assistant',data:{delta:'Published the static household panel.'}});
+              events({runId,stream:'lifecycle',data:{phase:'end'}});
+              return;
+            }
             if (dispatches === 2) {
               const navigation = (await action.execute('navigate', {op:'navigate',route:'devices'})).details;
               assert.equal(navigation.applied, true);
@@ -114,6 +124,14 @@ test('registered SDK tools update settings through production Python HTTP and in
     await page.getByLabel('Agent text response',{exact:true}).filter({hasText:'Opened Devices.'}).waitFor();
     await page.getByRole('heading',{name:'Devices',exact:true,level:1}).waitFor();
     assert.equal(dispatches,2);
+    await page.getByRole('button',{name:'Settings',exact:true}).click();
+    await page.getByLabel('Text message',{exact:true}).fill('Publish a static household panel');
+    await page.getByRole('button',{name:'Send text',exact:true}).click();
+    await page.getByLabel('Agent text response',{exact:true}).filter({hasText:'Published the static household panel.'}).waitFor();
+    const published = await (await fetch(`${ready.origin}/api/interface`,{headers:ready.headers})).json();
+    assert.equal(published.title,'Household panel');
+    assert.equal(published.published,true);
+    assert.equal(dispatches,3);
     await page.reload();
     await page.getByRole('button', { name: 'Agents', exact: true }).click();
     await page.getByRole('button', { name: 'View agent Kitchen helper', exact: true }).waitFor();
