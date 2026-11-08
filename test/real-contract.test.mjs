@@ -87,14 +87,14 @@ test('real versioned server enrollment and lifecycle contracts', { skip: source 
     await assert.rejects(client.confirmPairing('initiate', { ...body, device_id: 'dev_' + 'a'.repeat(64) }));
     await assert.rejects(client.confirmPairing('initiate', { ...body, request_id: 'malformed' }));
     await assert.rejects(client.confirmPairing('initiate', { ...body, heard_from_device: false }));
-    const mismatch = { ...body, code: body.code === '00000000' ? '11111111' : '00000000' };
+    const mismatch = { ...body, code: body.code === '0000' ? '1111' : '0000' };
     await assert.rejects(client.confirmPairing('initiate', mismatch));
     assert.equal((await client.confirmPairing('initiate', body)).status, 'initiated');
     const approved = await client.confirmPairing('approve', body);
     assert.equal(approved.status, 'approved');
     assert.deepEqual(Object.keys(approved).sort(), ['device_id', 'status']);
     const unproved = await control('physical', { prove: false });
-    await assert.rejects(requestJson(origin, '/api/enrollment/v1/initiate', { request_id: unproved.request_id, code: '00000000' }, await auth.bearer()));
+    await assert.rejects(requestJson(origin, '/api/enrollment/v1/initiate', { request_id: unproved.request_id, code: '0000' }, await auth.bearer()));
 
     const elapsed = await control('physical');
     await clock(301);

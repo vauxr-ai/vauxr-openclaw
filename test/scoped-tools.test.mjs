@@ -46,7 +46,7 @@ test('both physical control steps validate identity, state and window; responses
     pending.status=url.endsWith('/initiate')?'initiated':'approved';
     return {status:pending.status,device_id:pending.device_id,device_token:'never-project',code:'never-project'};
   });
-  const confirmation={request_id:pending.request_id,device_id:pending.device_id,code:'01234567',heard_from_device:true,physical_window_open:true};
+  const confirmation={request_id:pending.request_id,device_id:pending.device_id,code:'0123',heard_from_device:true,physical_window_open:true};
   assert.deepEqual(await client().confirmPairing('initiate',confirmation),{status:'initiated',device_id:pending.device_id});
   assert.deepEqual(await client().confirmPairing('approve',confirmation),{status:'approved',device_id:pending.device_id});
   assert.equal(calls.length,4);
@@ -55,8 +55,8 @@ test('both physical control steps validate identity, state and window; responses
 test('missing human confirmation, expiry, terminal state and mismatched device do not mutate server',async t=>{
   const pending=row();
   const calls=await fake(t,()=>({version:1,requests:[pending]}));
-  const confirmation={request_id:pending.request_id,device_id:pending.device_id,code:'01234567',heard_from_device:true,physical_window_open:true};
-  for(const change of [{heard_from_device:false},{physical_window_open:false},{code:'1234567'},{code:'12345678\n'}]) await assert.rejects(client().confirmPairing('initiate',{...confirmation,...change}));
+  const confirmation={request_id:pending.request_id,device_id:pending.device_id,code:'0123',heard_from_device:true,physical_window_open:true};
+  for(const change of [{heard_from_device:false},{physical_window_open:false},{code:'123'},{code:'1234\n'}]) await assert.rejects(client().confirmPairing('initiate',{...confirmation,...change}));
   assert.equal(calls.length,0);
   await assert.rejects(client().confirmPairing('initiate',{...confirmation,device_id:'dev_'+'c'.repeat(64)}));
   for(const status of ['denied','expired','failed','stale','consumed']) {
@@ -152,7 +152,7 @@ test('registered tools expose scoped operations and truthful pairing outcome wit
   assert.deepEqual(tools.map(tool=>tool.name),['vauxr_devices','vauxr_announce','vauxr_control','vauxr_pairing']);
   const pairing=tools.at(-1);
   assert.match(pairing.description,/directly supplied by the user/);
-  const result=await pairing.execute('1',{action:'approve',code:'01234567'});
+  const result=await pairing.execute('1',{action:'approve',code:'0123'});
   assert.match(result.content[0].text,/must finish enrollment/);
-  assert.ok(!JSON.stringify(result).includes('01234567'));
+  assert.ok(!JSON.stringify(result).includes('0123'));
 });
