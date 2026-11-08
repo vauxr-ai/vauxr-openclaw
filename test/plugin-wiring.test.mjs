@@ -37,7 +37,7 @@ test('entry introspection registers safe commands/tools, preserves custom voice 
   await entry.register(api);
   assert.equal(existsSync(directory), false);
   assert.deepEqual(cfg, original);
-  assert.deepEqual(tools.map(x=>x.name).sort(), ['vauxr_announce','vauxr_control','vauxr_devices','vauxr_pairing']);
+  assert.deepEqual(tools.map(x=>x.name).sort(), ['vauxr_announce','vauxr_context_action','vauxr_control','vauxr_devices','vauxr_pairing','vauxr_ui_agent_name_update','vauxr_ui_context_read']);
   assert.equal(commands[0].requireAuth, true);
   assert.deepEqual(commands[0].requiredScopes, ['operator.admin']);
   assert.equal(hooks[0].callback({}, { sessionKey: 'agent:assistant:vauxr:device' }).appendSystemContext, 'Custom voice prompt');

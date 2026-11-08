@@ -12,10 +12,13 @@
   "description": "Vauxr voice device channel plugin for OpenClaw",
   "contracts": {
     "tools": [
+      "vauxr_context_action",
       "vauxr_devices",
       "vauxr_announce",
       "vauxr_control",
-      "vauxr_pairing"
+      "vauxr_pairing",
+      "vauxr_ui_context_read",
+      "vauxr_ui_agent_name_update"
     ]
   },
   "channelConfigs": {
