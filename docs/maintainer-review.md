@@ -141,3 +141,31 @@ No Playwright, deployment, merge, OTA or runtime configuration change performed.
   that current peer contracts passed executable integration verification.
 - `git diff --check` and local relative Markdown link-target check passed.
   Mermaid reviewed as GitHub-compatible source; rendered GitHub view unverified.
+
+### Current peer contract execution (supersedes historical fixture gap)
+
+Evidence pins: server `c959d73f72c463862d6c6b7b18803f15770c40b4`, plugin
+`34ea6330947c360982d389d7804673791e966e41`. A disposable adaptation of the
+historical contract fixture updated its head gate, package imports, fixture-local
+data directory and independent-case selector; production handlers/client were
+unchanged. This is HTTP enrollment/lifecycle evidence, not live agent WS/media.
+
+- **Medium, reproduced incompatibility:** plugin `src/api-client.ts` function
+  `listPairingRequests` requires `dev_` plus exactly 64 hexadecimal characters;
+  server `src/vauxr/config.py:146` defaults to 16 and enrollment accepts 1–64
+  (`provisioning/enrollment.py:294`). Default owner/physical pairing fails with
+  `Invalid enrollment v1 response`. Reconcile the ID validator with the server's
+  supported opaque-ID contract in separately authorized behavioral work.
+- Same owner case with fixture-only `DEVICE_ID_LENGTH=64` passes physical
+  approval, lost ACK/restart, scopes, rotation and revocation. This workaround
+  is characterization, not a runtime configuration recommendation or repair.
+- Independent offline/lost-rotation and saved-rotation/ACK-expiry cases pass;
+  denial/expiry and cancellation/lost-enrollment cases pass. Initial combined
+  fixture failures cascaded from the failed owner case; they are not additional
+  production lifecycle defects.
+- Reproduction: temporary `real-contract.test.mjs` with
+  `VAUXR_CONTRACT_SOURCE=<server-checkout> node --test <fixture>`; independently
+  select `CASE=offline`, `CASE=saved`, or `CASE=owner DEVICE_ID_LENGTH=64`.
+  Temporary fixtures are not a maintained committed test suite. Exact fixture
+  head assertions must be updated for a later documentation head; do not silently
+  bypass them or represent the unmodified historical suite as current proof.
