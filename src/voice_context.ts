@@ -1,6 +1,8 @@
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 
-/** Standard and Realtime share one authenticated device/session mapping. */
+/** Standard and Realtime share this device/session mapping. deviceId must come from the authenticated server. A validated friendly label
+ * affects display only: sender, history key and tool policy continue using deviceId.
+ * Timestamp uses milliseconds, unlike enrollment deadlines (Unix seconds). */
 export function voiceContext(agentId: string, deviceId: string, displayName?: unknown): MsgContext {
   return {
     From: deviceId,

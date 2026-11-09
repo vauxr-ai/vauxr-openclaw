@@ -4,10 +4,13 @@ import { requestJson, validateOrigin, VauxrError } from "./transport.js";
 export type AuthState = 'storage_unavailable' | 'unpaired' | 'pending' | 'approved' | 'saving' |
   'connecting' | 'connected' | 'disconnected' | 'denied' | 'expired' | 'cancelled' | 'failed' |
   're_pair_required' | 'storage_error' | 'transport_error';
+/** Public snapshot: expiresAt is Unix seconds, and userCode is owner confirmation only. */
 export interface AuthStatus { state: AuthState; userCode?: string; expiresAt?: number }
 interface Pending {
   request_id: string; request_secret: string; origin: string; display_name: string; expires_at: number;
 }
+/** Private durable state, bound to BOTH endpoints. enrollmentAck means the saved
+ * credential still needs ACK; rotation retains old and replacement slots together. */
 export interface SecretRecord {
   version: 1; origin: string; wsUrl: string; pending?: Pending; serverId?: string;
   subject?: string; credential?: string; enrollmentAck?: boolean;
@@ -15,8 +18,9 @@ export interface SecretRecord {
   terminal?: AuthState;
 }
 /** Plugin-internal port, NOT an OpenClaw runtime API. secret-store.ts adapts the verified SDK.
- * Implementations must atomically commit/flush a protected record, retaining the old
- * record on failure. The supported SDK adapter adds strict flush and readback. */
+ * Implementations must atomically publish and flush a protected record before success.
+ * Failure can follow publication; callers must not ACK merely because it is readable.
+ * The supported SDK adapter adds strict flush and readback. */
 export interface ProtectedStore {
   read(): Promise<SecretRecord | undefined>;
   commit(record: SecretRecord): Promise<void>;
@@ -26,6 +30,9 @@ const hex = (v: unknown) => typeof v === 'string' && /^[a-f0-9]{32}$/.test(v);
 const credential = (v: unknown): v is string => typeof v === 'string' && /^vx_int_[A-Za-z0-9_-]{43}$/.test(v);
 const invalid = () => new VauxrError('invalid_contract');
 
+/** Enrollment/rotation state machine. Mutating network operations serialize on
+ * one recoverable promise chain; readiness remains a separate WebSocket proof.
+ * See docs/auth-lifecycle.md for save-before-ACK and one-time-delivery recovery. */
 export class VauxrAuth {
   #record?: SecretRecord;
   #status: AuthStatus;
@@ -100,6 +107,7 @@ export class VauxrAuth {
       await this.advanceEnrollment(true);
     });
   }
+  /** Cancel pending setup, not completed authority. Revocation is owner-only. */
   async cancel() {
     return this.exclusive(async () => {
       await this.load();
@@ -109,6 +117,8 @@ export class VauxrAuth {
       await this.terminal('cancelled');
     });
   }
+  /** Resume durable enrollment/ACK or poll this principal's rotation; never enroll
+   * a terminal record automatically. Network/storage failures reject with bounded codes. */
   async tick() {
     return this.exclusive(async () => {
       await this.load();
@@ -118,6 +128,8 @@ export class VauxrAuth {
       else await this.advanceRotation();
     });
   }
+  // A failed operation must not poison subsequent retries. Persisted terminal
+  // rejection wins over late network success via the synchronous rejected latch.
   private exclusive(action: () => Promise<void>): Promise<void> {
     const next = this.#operation.catch(() => undefined).then(async () => {
       try { await action(); }
@@ -216,6 +228,8 @@ export class VauxrAuth {
     if (this.#record.rotation) throw new VauxrError('rotation_pending');
     return this.#record.credential;
   }
+  /** Called only after agent.ready subject validation; HTTP credential availability
+   * alone does not establish authenticated channel connectivity. */
   connected() {
     if (!this.#rejected && this.#record?.credential && !this.#record.terminal && !this.#record.enrollmentAck &&
       // A valid agent.ready proves transport recovery even if the HTTP poll
@@ -225,6 +239,7 @@ export class VauxrAuth {
   }
   subject(): string | undefined { return this.#record?.subject; }
   disconnected() { if (this.#status.state === 'connected') this.state('disconnected'); }
+  /** Latch rejection before queued work drains so late saves cannot revive authority. */
   async rejected() {
     this.#rejected = true;
     await this.exclusive(() => this.terminal('re_pair_required'));

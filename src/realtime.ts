@@ -16,6 +16,9 @@ export class RealtimeConversations {
   private sessions = new Map<string, Scope>();
   constructor(private config: OpenClawConfig, private agentId: string) {}
 
+  /** Bind an ephemeral media token to existing device history and return bounded
+   * context (last 24 entries, 2000 chars each, 12000 total), not a backend run.
+   * The 128-scope guard applies even when rebinding an existing token. */
   async bootstrap(deviceId: string, session: string, displayName?: unknown) {
     if (this.sessions.size >= 128) throw new Error("Too many realtime sessions; reconnect the integration");
     const ctx = voiceContext(this.agentId, deviceId, displayName);
@@ -50,6 +53,7 @@ export class RealtimeConversations {
     return { instructions: instructions ?? "", messages, sessionId: scope.sessionId };
   }
 
+  /** Refuse stale session IDs after a backend reset instead of writing old history. */
   scope(deviceId: string, session: string) {
     const scope = this.sessions.get(`${deviceId}:${session}`);
     if (!scope || getSessionEntry(scope)?.sessionId !== scope.sessionId) {
@@ -64,6 +68,9 @@ export class RealtimeConversations {
     return { released: true };
   }
 
+  /** Persist at most 64 fragments, each at most 16000 characters, without tools.
+   * Session + fragment ID forms transcript idempotency; callers must keep IDs stable
+   * across retries. delivered is a peer assertion, not plugin playback telemetry. */
   async record(deviceId: string, session: string, fragments: Fragment[], displayName?: unknown) {
     const scope = this.scope(deviceId, session);
     if (!Array.isArray(fragments) || fragments.length > 64) throw new Error("Invalid transcript batch");

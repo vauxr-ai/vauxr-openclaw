@@ -14,6 +14,9 @@ function formatDeviceList(devices: Device[]): string {
     .join("\n");
 }
 
+/** Register scoped tools over a rotating-credential client. Successful results
+ * acknowledge submission, not device completion. Keep firmware capabilities and
+ * enrollment proof out of text/details; errors must not expose raw server payloads. */
 export function registerTools(api: OpenClawPluginApi, client: VauxrAPIClient): void {
   api.registerTool(
     {

@@ -38,6 +38,8 @@ function string(value: unknown): string {
   return value.replace(/vx_(?:int|dev)_[A-Za-z0-9_-]+/g, "[redacted]").replace(/[\u0000-\u001f\u007f]/g, " ");
 }
 
+/** Scoped HTTP facade. Resolve the bearer per request so rotation is observed;
+ * project server data before tools render it, rather than forwarding raw objects. */
 export class VauxrAPIClient {
   private baseUrl: string;
   private secure: boolean;
@@ -46,6 +48,7 @@ export class VauxrAPIClient {
     this.secure = strictTls || this.baseUrl.startsWith("https:");
     if (otaPublicBase) this.otaPublicBase = validateOrigin(otaPublicBase, this.secure);
   }
+  /** Public firmware location only, not a minted delivery capability or publication. */
   defaultOtaUrl(filename = "satellite1.bin"): string | undefined {
     if (!/^[A-Za-z0-9_.-]+$/.test(filename)) throw new Error("Invalid firmware filename");
     return this.otaPublicBase ? `${this.otaPublicBase}/firmware/${filename}` : undefined;
@@ -53,6 +56,7 @@ export class VauxrAPIClient {
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     return requestJson<T>(this.baseUrl, path, body, await this.token(), method);
   }
+  /** Return an allowlisted display projection; unknown server fields never escape. */
   async listDevices(): Promise<Device[]> {
     const rows = await this.request<unknown>("GET", "/api/devices");
     if (!Array.isArray(rows)) throw new Error("Invalid Vauxr response");
@@ -72,9 +76,12 @@ export class VauxrAPIClient {
       return result;
     });
   }
+  /** Submission success is not proof that synthesis/playback completed. */
   async announce(deviceId: string, text: string): Promise<void> {
     await this.request("POST", `/api/devices/${encodeURIComponent(deviceId)}/announce`, { text });
   }
+  /** Mint an internal, same-origin capability with a 1–120 second reported lifetime.
+   * Pass directly to command; do not include the URL in tool output or logs. */
   async mintFirmwareDelivery(filename: string): Promise<string> {
     if (typeof filename !== "string" || !FIRMWARE_NAME.test(filename) || /[\r\n]/.test(filename) || filename.includes("..")) throw new Error("Invalid firmware filename");
     const row = object(await this.request("POST", `/api/firmware-delivery/${encodeURIComponent(filename)}`, {}));
@@ -90,6 +97,8 @@ export class VauxrAPIClient {
     }
     return url.href;
   }
+  /** Strip unrelated params and reject unsupported operations before HTTP. Volume
+   * is 0–100; OTA must preserve HTTPS when the client uses secure transport. */
   async command(deviceId: string, command: string, params?: Record<string, unknown>): Promise<void> {
     if (!COMMANDS.has(command)) throw new Error("Unsupported Vauxr command; playback URLs and administration are not available");
     let safeParams: Record<string, unknown> | undefined;
@@ -107,6 +116,7 @@ export class VauxrAPIClient {
     }
     await this.request("POST", `/api/devices/${encodeURIComponent(deviceId)}/command`, { command, ...(safeParams ? { params: safeParams } : {}) });
   }
+  /** Physical enrollment only; expires_at is Unix seconds, not milliseconds. */
   async listPairingRequests(): Promise<PairingRequest[]> {
     const response = object(await this.request("POST", "/api/enrollment/v1/list", {}));
     if (response.version !== 1 || !Array.isArray(response.requests)) throw new Error("Invalid enrollment v1 response");
@@ -116,6 +126,9 @@ export class VauxrAPIClient {
       return { request_id: row.request_id, device_id: row.device_id, kind: "physical", display_name: string(row.display_name), status: row.status as PairingRequest["status"], expires_at: row.expires_at as number };
     });
   }
+  /** Re-read identity/state/deadline immediately before mutation. Human assertions
+   * are required on EACH step; only the server can validate the physical proof.
+   * Return status/identity, never the device credential or spoken code. */
   async confirmPairing(action: "initiate" | "approve", confirmation: PhysicalConfirmation): Promise<{ status: "initiated" | "approved"; device_id: string }> {
     if (!["initiate", "approve"].includes(action) || confirmation.heard_from_device !== true || confirmation.physical_window_open !== true || (typeof confirmation.code !== "string" || confirmation.code.length !== 4 || !/^[0-9]{4}$/.test(confirmation.code))) throw new Error("Pairing requires the exact four digits heard locally from the intended device and explicit confirmation that its physical pairing window is still open");
     const request = (await this.listPairingRequests()).find(row => row.request_id === confirmation.request_id && row.device_id === confirmation.device_id);
