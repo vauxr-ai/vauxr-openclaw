@@ -1,6 +1,7 @@
 # Spec: Refactor vauxr channel to use `channel.turn.run`
 
-**Status:** Decisions locked — ready for impl
+**Status:** Historical implementation plan; current dispatch uses `runtime.channel.inbound.run`.
+See [maintainer architecture](../maintainer-review.md) for the implemented transport and ownership boundaries.
 **Branch:** `feat/spec-channel-turn-refactor`
 
 ## Background

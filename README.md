@@ -2,9 +2,15 @@
 
 An OpenClaw channel plugin that connects paired Vauxr voice devices to the agent loop and streams responses to the server's configured speech provider. It also exposes scoped device tools.
 
+## Maintainer map
+
+Start with [architecture, wire ownership and review evidence](docs/maintainer-review.md).
+[Auth lifecycle](docs/auth-lifecycle.md) covers durable enrollment;
+[friendly device titles](docs/friendly-device-display.md) records the display-only identity boundary.
+
 ## Compatibility and setup
 
-Requires **OpenClaw 2026.9.3 or later** with the public secret-file SDK and a POSIX filesystem supporting private permissions and file/directory fsync. The versioned server contracts are tested against Vauxr commit `16968a73b7610c917a9922d94d8c7ef187f7dda3` (integration, enrollment and lifecycle v1). This is an auth migration requiring compatible server and firmware releases; older shared channel tokens are not supported.
+Requires **OpenClaw 2026.9.4 or later** with the public secret-file SDK and a POSIX filesystem supporting private permissions and file/directory fsync. The versioned server contracts are tested against Vauxr commit `4155222a24316478675e54764cd7fed73fa04145` (integration, enrollment and lifecycle v1). This is an auth migration requiring compatible server and firmware releases; older shared channel tokens are not supported.
 
 Install the plugin from a reviewed release or local build:
 
@@ -87,7 +93,10 @@ npm test
 VAUXR_CONTRACT_SOURCE=/path/to/exact/reviewed/server npm run test:contract
 ```
 
-The contract suite requires the exact server head above plus Python with `aiohttp` and `cryptography`; it imports server code read-only and writes fixtures only under this worktree's ignored `test-artifacts`. Without the explicit source setting, ordinary `npm test` reports that suite skipped. The release verification command supplies it and must have zero skips. Local HTTPS/WSS tests require `openssl`, generate temporary certificates, and test trusted, untrusted, wrong-name and expired certificates.
+The contract suite requires the exact server head above plus Python with `aiohttp` and `cryptography`; it imports server code read-only and writes fixtures only under this worktree's ignored `test-artifacts`. Without the explicit source setting, ordinary `npm test` reports that suite skipped. The contract command supplies it; release verification must also supply
+`VAUXR_RESTART_SOURCE` when running `npm test` to exercise the separate restart
+fixture. Both fixtures currently expect the pre-package-layout server source;
+see the maintainer review for current-server limitations. Local HTTPS/WSS tests require `openssl`, generate temporary certificates, and test trusted, untrusted, wrong-name and expired certificates.
 
 These automated checks do not establish physical button/audio behavior, live browser trust, device OTA or end-to-end speech-provider interoperability. Those require separately authorized integration acceptance. This change performs no deployment or OTA.
 

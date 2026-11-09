@@ -68,6 +68,8 @@ const MAX_RECONNECT_MS = 30000;
 
 export class VauxrBridge {
   private conversations?: RealtimeConversations;
+  // Memoized results live for this bridge instance, including across socket
+  // reconnects; release removes session scope, not request history.
   private realtimeRequests = new Map<string, Promise<unknown>>();
   private realtimeTails = new Map<string, Promise<unknown>>();
   private ws: WebSocket | null = null;
@@ -132,6 +134,8 @@ export class VauxrBridge {
     this.reconnectMs = INITIAL_RECONNECT_MS;
   }
 
+  // Retires output ownership only: SDK dispatches/tools may still finish.
+  // There is no backend-cancel frame in this protocol.
   private retireTurns() {
     this.authenticated = false;
     this.activeRuns.clear(); this.runIdToTurn.clear();
