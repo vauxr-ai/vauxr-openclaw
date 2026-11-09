@@ -1,6 +1,8 @@
 import http from "node:http";
 import https from "node:https";
 
+/** Bounded machine-readable failure; status 0 means no mapped HTTP response.
+ * Never attach response bodies, URLs with secrets, or native transport exceptions. */
 export class VauxrError extends Error {
   constructor(public readonly code: string, public readonly status = 0) {
     super(`Vauxr: ${code}`);
@@ -18,6 +20,8 @@ export function validateOrigin(input: string, strictTls = false): string {
   } catch { throw new VauxrError('invalid_server_origin'); }
 }
 
+/** Bind API and /agent to the same scheme/hostname (ports may differ). Only the
+ * conventional 8765 socket port derives API port 8080; other ports stay unchanged. */
 export function endpoints(config: { url: string; httpUrl?: string; strictTls?: boolean }) {
   const socketOrigin = validateOrigin(config.url.replace(/^ws:/, 'http:').replace(/^wss:/, 'https:'), config.strictTls);
   const socket = new URL(socketOrigin);
@@ -31,7 +35,10 @@ export function endpoints(config: { url: string; httpUrl?: string; strictTls?: b
   return { origin, wsUrl: socket.href };
 }
 
-/** Native transport: no cookies, redirects, URL credentials, TLS bypass or raw errors. */
+/** Native JSON request with a 10-second total deadline and 1 MiB response cap.
+ * No cookies, redirects, URL credentials, TLS bypass or raw errors. Empty success
+ * resolves undefined; T is a compile-time assertion, NOT response validation.
+ * Callers validate protocol shapes. There is no AbortSignal parameter. */
 export async function requestJson<T = Record<string, unknown>>(
   baseUrl: string, path: string, body?: unknown, token?: string, method = 'POST',
 ): Promise<T> {

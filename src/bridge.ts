@@ -66,6 +66,9 @@ export function deliverCurrentTurnText(deviceId: string, text: string): string {
 const INITIAL_RECONNECT_MS = 1000;
 const MAX_RECONNECT_MS = 30000;
 
+/** Owns authenticated socket output, not SDK task cancellation or device playback.
+ * A bridge survives socket reconnect; realtime deduplication survives with it.
+ * Standard and consult dispatch share per-device exclusion and durable history. */
 export class VauxrBridge {
   private conversations?: RealtimeConversations;
   // Memoized results live for this bridge instance, including across socket
@@ -142,6 +145,8 @@ export class VauxrBridge {
     this.sentinelBuffer.clear(); this.sentinelMode.clear();
   }
 
+  /** Reconcile saved authority with the socket credential. Generation guards prevent
+   * an awaited bearer lookup from restarting a bridge stopped in the meantime. */
   async refresh(): Promise<void> {
     const generation = this.generation;
     let next: string;
@@ -259,6 +264,9 @@ export class VauxrBridge {
     }
   }
 
+  // Memoize the promise before replying: retries with the same compound key
+  // reuse both successes and failures. Consult does not become the device tail,
+  // allowing record operations to continue while backend tools are still running.
   private async handleRealtime(frame: VauxrInboundFrame): Promise<void> {
     const { requestId, deviceId, session, operation, payload = {} } = frame;
     if (!requestId || !deviceId || !session || !/^[a-zA-Z0-9_-]{1,100}$/.test(session)) return;
@@ -547,6 +555,9 @@ export class VauxrBridge {
     });
   }
 
+  /** Outbound message-tool path: require the exact live turn and device. The return
+   * value is a local sequence ID, not a server/device delivery receipt. Consult
+   * collection cannot send a second independent spoken reply through this path. */
   deliverTurnText(turn: ActiveVauxrTurn, deviceId: string, text: string): string {
     if (!text || turn.collect || turn.deviceId !== deviceId
         || this.activeRuns.get(deviceId) !== turn
@@ -563,6 +574,8 @@ export class VauxrBridge {
     return messageId;
   }
 
+  // Drop output from retired protocol runs, even if an old SDK operation finishes
+  // after reconnect. No offline queue or replay is provided by this transport.
   private send(frame: VauxrOutboundFrame): void {
     if ("runId" in frame && this.activeRuns.get(frame.deviceId)?.protocolRunId !== frame.runId) return;
     if (this.authenticated && this.ws?.readyState === WebSocket.OPEN) {

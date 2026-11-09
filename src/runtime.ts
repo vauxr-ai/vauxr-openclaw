@@ -31,7 +31,10 @@ export class VauxrRuntime {
     this.running = true;
     void this.cycle();
   }
+  /** Retire timers and socket output; an already awaited auth operation may finish. */
   stop() { this.running = false; if (this.timer) clearTimeout(this.timer); this.timer = undefined; this.bridge.stop(); }
+  // One poll at a time. Pending setup polls faster than steady-state rotation;
+  // bounded exponential delay applies to HTTP failures, not socket reconnects.
   private async cycle() {
     if (!this.running) return;
     if (this.work) { await this.work; return; }
@@ -49,6 +52,8 @@ export class VauxrRuntime {
     const base = ['pending', 'approved', 'saving'].includes(state) ? 15_000 : 60_000;
     this.timer = setTimeout(() => { void this.cycle(); }, Math.min(base * 2 ** this.failures, 300_000) + Math.random() * 1000);
   }
+  /** Wait for current poll work before explicit setup actions. Render only public
+   * state/code/deadline, never the protected record or underlying request errors. */
   async command(action: string): Promise<string> {
     if (!['status', 'pair', 'cancel'].includes(action)) return 'Use /vauxr status, /vauxr pair or /vauxr cancel. Never supply a credential.';
     if (this.work) await this.work;

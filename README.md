@@ -2,11 +2,17 @@
 
 An OpenClaw channel plugin that connects paired Vauxr voice devices to the agent loop and streams responses to the server's configured speech provider. It also exposes scoped device tools.
 
-## Maintainer map
+## Documentation
 
-Start with [architecture, wire ownership and review evidence](docs/maintainer-review.md).
-[Auth lifecycle](docs/auth-lifecycle.md) covers durable enrollment;
-[friendly device titles](docs/friendly-device-display.md) records the display-only identity boundary.
+| Your goal | Start here |
+| --- | --- |
+| Learn the system | [Tutorial: first local success](docs/tutorial.md) |
+| Complete a task | [How-to: connect, route and recover](docs/how-to.md) |
+| Look up a contract | [Configuration and API reference](docs/reference.md) |
+| Understand design decisions | [Explanation: authority, turns and history](docs/explanation.md) |
+
+[Review findings and verification evidence](docs/maintainer-review.md) and
+[documentation coverage](docs/coverage.md) are supporting review material, not prerequisites.
 
 ## Compatibility and setup
 

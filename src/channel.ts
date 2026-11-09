@@ -4,6 +4,7 @@ import { deliverCurrentTurnText } from "./bridge.js";
 import { createTopLevelChannelConfigBase } from "openclaw/plugin-sdk/channel-config-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 
+/** The server integration is a single OpenClaw account, not one account per device. */
 export interface VauxrAccount {
   accountId?: string | null;
 }
@@ -109,6 +110,7 @@ interface VauxrSection {
   targetAgent?: string;
 }
 
+/** Resolve configuration presence only; a URL is not evidence of enrollment or readiness. */
 function resolveSection(cfg: OpenClawConfig): VauxrSection | undefined {
   const raw = cfg as Record<string, unknown>;
   const channelsCfg = (raw.channels as Record<string, unknown> | undefined)?.vauxr as

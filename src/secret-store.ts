@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { ProtectedStore, SecretRecord } from './auth.js';
 import { VauxrError } from './transport.js';
 
+// Module-wide per-file serialization also covers separately constructed adapters
+// for the same binding. A rejected writer must not block the next queued commit.
 const queues = new Map<string, Promise<unknown>>();
 const unavailable = () => new VauxrError('storage_error');
 
@@ -35,6 +37,8 @@ export function createProtectedStore(stateDir: string, bindingKey: string): Prot
       await inspect(item, true);
     }
   }
+  // Missing state is unpaired; malformed or unsafe existing state is an error.
+  // Semantic credential/binding validation remains the auth state machine's job.
   async function read(): Promise<SecretRecord | undefined> {
     try {
       await directories(false);

@@ -24,6 +24,8 @@ function hasConversationAccess(api: OpenClawPluginApi): boolean {
   return hooks?.allowConversationAccess === true;
 }
 
+/** Channel configuration wins over legacy plugin slots. Endpoint changes require a
+ * new gateway API owner; registration itself must not enroll or open sockets. */
 function resolveConfig(api: OpenClawPluginApi): VauxrConfig {
   const cfg = api.config as Record<string, unknown>;
   const channels = cfg.channels as Record<string, unknown> | undefined;
@@ -32,6 +34,7 @@ function resolveConfig(api: OpenClawPluginApi): VauxrConfig {
   return config?.vauxr ?? config ?? {} as VauxrConfig;
 }
 
+/** Full registration owns one runtime per API instance; setup discovery has no network authority. */
 const entry = defineChannelPluginEntry({
   id: "vauxr",
   name: "Vauxr",
