@@ -39,7 +39,7 @@ Example: `{"device_id":"<device-id>","command":"set_barge_in","enabled":false}`.
 
 ### vauxr_pairing
 
-`action: "list"|"initiate"|"approve"` is required. List takes no other required arguments and uses `POST /api/enrollment/v1/list` with `{}`; only physical pending/ready/initiated requests are exposed. Result includes `details: {requests}` with request ID, device ID, display name, status and expiry.
+`action: "list"|"initiate"|"approve"` is required. List takes no other required arguments and uses `POST /api/enrollment/v1/list` with `{}`; only physical requests are exposed; statuses include challenge, ready, initiated, approved, consumed, denied, cancelled, failed, expired and stale. Result includes `details: {requests}` with request ID, device ID, display name, status and expiry.
 
 Initiate and approve additionally require:
 
